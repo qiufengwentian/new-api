@@ -724,29 +724,20 @@ func ExpireSubscriptionOrder(tradeNo string, expectedPaymentProvider string) err
 // the "admin" source and bounded by the plan's purchase cap. sourceNote is kept
 // for call-site compatibility and does not affect the created instance.
 func AdminBindSubscription(userId int, planId int, sourceNote string) (string, error) {
-	return AdminBindSubscriptionWithSource(userId, planId, "admin", true)
-}
-
-// AdminBindSubscriptionWithSource creates a no-payment subscription instance
-// tagged with source: "admin" for a manual grant, "contribution" for a
-// contributed-upstream reward, and "order" for a purchase. enforcePurchaseCap
-// selects whether the plan's MaxPurchasePerUser limit applies. Reward grants pass
-// false because that limit governs purchases, not rewards, and a reward that
-// failed on it would break the contribution contract.
-//
-// The returned message is the admin-facing user-group hint ("" when the group did
-// not change), exactly what AdminBindSubscription always returned. Callers that
-// need the created instance itself - GrantContributionReward does, to record which
-// subscription a contribution produced - use bindSubscriptionWithSource; both
-// entry points run the same implementation.
-func AdminBindSubscriptionWithSource(userId, planId int, source string, enforcePurchaseCap bool) (string, error) {
-	_, message, err := bindSubscriptionWithSource(userId, planId, source, enforcePurchaseCap)
+	_, message, err := bindSubscriptionWithSource(userId, planId, "admin", true)
 	return message, err
 }
 
-// bindSubscriptionWithSource is the shared core of the admin-bind variants. It
-// opens its own transaction and locks the user row first, so callers must not
-// already be inside a transaction on DB.
+// bindSubscriptionWithSource is the shared core of the no-payment subscription
+// grants. It tags the instance with source ("admin" for a manual grant,
+// "contribution" for a contributed-upstream reward), and enforcePurchaseCap
+// selects whether the plan's MaxPurchasePerUser limit applies: reward grants pass
+// false because that limit governs purchases, and a reward that failed on it would
+// break the contribution contract.
+//
+// It returns the created instance, the admin-facing user-group hint ("" when the
+// group did not change) and the error. It opens its own transaction and locks the
+// user row first, so callers must not already be inside a transaction on DB.
 func bindSubscriptionWithSource(userId, planId int, source string, enforcePurchaseCap bool) (*UserSubscription, string, error) {
 	if userId <= 0 || planId <= 0 {
 		return nil, "", errors.New("invalid userId or planId")
