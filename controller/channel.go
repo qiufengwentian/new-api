@@ -2045,54 +2045,16 @@ func ManageMultiKeys(c *gin.Context) {
 			return
 		}
 
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-
-		newIndex := 0
-		for i, key := range keys {
-			// 跳过要删除的密钥
-			if i == keyIndex {
-				continue
-			}
-
-			remainingKeys = append(remainingKeys, key)
-
-			// 保留其他密钥的状态信息，重新索引
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if status, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists && status != 1 {
-					newStatusList[newIndex] = status
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-				if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-					newDisabledTime[newIndex] = t
-				}
-			}
-			if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-				if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-					newDisabledReason[newIndex] = r
-				}
-			}
-			newIndex++
-		}
-
-		if len(remainingKeys) == 0 {
+		// delete_key and delete_disabled_keys share the model index rebuild so a channel's key
+		// list and its per-index status maps can never drift apart.
+		_, remaining := model.RebuildChannelMultiKey(channel, func(index, _ int) bool { return index != keyIndex })
+		if remaining == 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "不能删除最后一个密钥",
 			})
 			return
 		}
-
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
 		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
 		err = channel.Update()
@@ -2111,45 +2073,18 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 
 	case "delete_disabled_keys":
-		keys := channel.GetKeys()
-		var remainingKeys []string
-		var deletedCount int
-		var newStatusList = make(map[int]int)
-		var newDisabledTime = make(map[int]int64)
-		var newDisabledReason = make(map[int]string)
-
-		newIndex := 0
-		for i, key := range keys {
-			status := 1 // default enabled
-			if channel.ChannelInfo.MultiKeyStatusList != nil {
-				if s, exists := channel.ChannelInfo.MultiKeyStatusList[i]; exists {
-					status = s
-				}
-			}
-
-			// 只删除自动禁用（status == 3）的密钥，保留启用（status == 1）和手动禁用（status == 2）的密钥
-			if status == 3 {
-				deletedCount++
-			} else {
-				remainingKeys = append(remainingKeys, key)
-				// 保留非自动禁用密钥的状态信息，重新索引
-				if status != 1 {
-					newStatusList[newIndex] = status
-					if channel.ChannelInfo.MultiKeyDisabledTime != nil {
-						if t, exists := channel.ChannelInfo.MultiKeyDisabledTime[i]; exists {
-							newDisabledTime[newIndex] = t
-						}
-					}
-					if channel.ChannelInfo.MultiKeyDisabledReason != nil {
-						if r, exists := channel.ChannelInfo.MultiKeyDisabledReason[i]; exists {
-							newDisabledReason[newIndex] = r
-						}
-					}
-				}
-				newIndex++
+		// 只删除自动禁用（status == 3）的密钥，保留启用（status == 1）和手动禁用（status == 2）的密钥。
+		// 该动作历来不保留非禁用密钥留下的原因/时间记录，先按此清掉再复用同一份索引重排实现。
+		for index := range channel.GetKeys() {
+			if channel.GetMultiKeyStatus(index) == common.ChannelStatusEnabled {
+				delete(channel.ChannelInfo.MultiKeyDisabledReason, index)
+				delete(channel.ChannelInfo.MultiKeyDisabledTime, index)
 			}
 		}
 
+		deletedCount, _ := model.RebuildChannelMultiKey(channel, func(_ int, status int) bool {
+			return status != common.ChannelStatusAutoDisabled
+		})
 		if deletedCount == 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
@@ -2157,13 +2092,6 @@ func ManageMultiKeys(c *gin.Context) {
 			})
 			return
 		}
-
-		// Update channel with remaining keys
-		channel.Key = strings.Join(remainingKeys, "\n")
-		channel.ChannelInfo.MultiKeySize = len(remainingKeys)
-		channel.ChannelInfo.MultiKeyStatusList = newStatusList
-		channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
-		channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 
 		shouldCloseWebSocket := disableMultiKeyChannelIfUnavailable(channel)
 		err = channel.Update()
