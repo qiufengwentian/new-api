@@ -6885,6 +6885,7 @@
     "Created a contributable upstream entry": "貢献可能な上流の項目を作成しました",
     "Delete upstream": "上流を削除",
     "Deleted a contributable upstream entry": "貢献可能な上流の項目を削除しました",
+    "Disabled a contributed upstream key": "提供された上流キーを無効化しました",
     "Edit upstream": "上流を編集",
     "Failed to create contribution entry": "項目の作成に失敗しました",
     "Failed to delete contribution entry": "項目の削除に失敗しました",

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -70,4 +71,51 @@ func TestSystemTaskInvalidFiltersAreRejected(t *testing.T) {
 			assert.JSONEq(t, `{"success":false,"message":"invalid system task filters"}`, recorder.Body.String())
 		})
 	}
+}
+
+// RegisterScheduledSystemTasks is the single place that wires the periodic jobs
+// into the system task runner, so a missing entry there is a job that never runs:
+// the contributed-key liveness probe has to be part of that set.
+func TestRegisterScheduledSystemTasksWiresTheContributionProbe(t *testing.T) {
+	registered := RegisterScheduledSystemTasks()
+
+	assert.Contains(t, registered, model.SystemTaskTypeContributionProbe)
+	assert.Contains(t, registered, model.SystemTaskTypeChannelTest)
+	assert.Contains(t, registered, model.SystemTaskTypeModelUpdate)
+}
+
+// The probe is scheduled only while something is pooled - Enabled() is the gate
+// the framework consults before it creates a run row - and its default period
+// bounds how long a key the upstream already rejected keeps taking relay traffic.
+func TestContributionProbeHandlerIsGatedOnPooledContributions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	previousDB := model.DB
+	model.DB = db
+	t.Cleanup(func() {
+		model.DB = previousDB
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&model.Contribution{}))
+
+	handler := contributionProbeHandler{}
+	assert.Equal(t, model.SystemTaskTypeContributionProbe, handler.Type())
+	assert.Equal(t, 10*time.Minute, handler.Interval())
+	assert.Nil(t, handler.NewPayload())
+	assert.False(t, handler.Enabled(), "an empty pool schedules no probe")
+
+	require.NoError(t, db.Create(&model.Contribution{
+		UserId:        1,
+		ChannelType:   1,
+		HostChannelId: 1,
+		Status:        model.ContributionStatusActive,
+	}).Error)
+	assert.True(t, handler.Enabled())
+
+	require.NoError(t, db.Model(&model.Contribution{}).
+		Where("status = ?", model.ContributionStatusActive).
+		Update("status", model.ContributionStatusDead).Error)
+	assert.False(t, handler.Enabled(), "a dead contribution is no longer probed")
 }

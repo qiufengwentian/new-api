@@ -5,7 +5,19 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 )
+
+// init hands the single-key probe to the service-layer liveness orchestrator. The
+// dependency points this way because the reverse one is an import cycle:
+// controller already imports service, so the scheduler's per-key walk lives in
+// service and reaches the channel-type balance dispatch through this function.
+func init() {
+	service.ContributionKeyProbeFunc = func(key string, hostChannel *model.Channel) (int, error) {
+		result := probeContributionKey(key, hostChannel)
+		return result.StatusCode, result.Err
+	}
+}
 
 // contributionProbeResult is what a single-key liveness probe observed.
 type contributionProbeResult struct {

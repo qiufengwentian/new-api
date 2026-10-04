@@ -13,15 +13,27 @@ import (
 )
 
 // RegisterScheduledSystemTasks wires the periodic channel test, upstream model
-// update, and async task polling (Midjourney / Suno / video) jobs into the
-// system task framework so a DB lease dedups execution across multiple master
-// instances and each run is recorded as one task row. Call this before
-// service.StartSystemTaskRunner.
-func RegisterScheduledSystemTasks() {
-	service.RegisterSystemTaskHandler(channelTestHandler{})
-	service.RegisterSystemTaskHandler(modelUpdateHandler{})
-	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
-	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+// update, async task polling (Midjourney / Suno / video) and contributed-key
+// liveness jobs into the system task framework so a DB lease dedups execution
+// across multiple master instances and each run is recorded as one task row. Call
+// this before service.StartSystemTaskRunner.
+//
+// It returns the task types it registered, so the process (and its tests) can
+// report which scheduled jobs are actually wired.
+func RegisterScheduledSystemTasks() []string {
+	handlers := []service.SystemTaskHandler{
+		channelTestHandler{},
+		modelUpdateHandler{},
+		midjourneyPollHandler{},
+		asyncTaskPollHandler{},
+		contributionProbeHandler{},
+	}
+	registered := make([]string, 0, len(handlers))
+	for _, handler := range handlers {
+		service.RegisterSystemTaskHandler(handler)
+		registered = append(registered, handler.Type())
+	}
+	return registered
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -150,6 +162,33 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// contributionProbeInterval is the liveness period of contributed keys. Ten
+// minutes bounds how long a key the upstream has already rejected keeps taking
+// relay traffic, at the cost of one balance query per pooled key per period.
+const contributionProbeInterval = 10 * time.Minute
+
+// contributionProbeHandler runs the scheduled per-key liveness probe of every
+// pooled contributed key. Enabled() folds in the "is anything pooled?" check, so an
+// instance with no contributions schedules no rows and issues no upstream calls -
+// the same pattern the task poll handlers use.
+type contributionProbeHandler struct{}
+
+func (contributionProbeHandler) Type() string { return model.SystemTaskTypeContributionProbe }
+
+func (contributionProbeHandler) Enabled() bool { return model.HasActiveContributions() }
+
+func (contributionProbeHandler) Interval() time.Duration { return contributionProbeInterval }
+
+func (contributionProbeHandler) NewPayload() any { return nil }
+
+func (contributionProbeHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	if err := service.ProbeContributionLiveness(ctx); err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, nil, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {

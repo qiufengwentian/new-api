@@ -295,3 +295,7 @@ custom_oauth.name_empty: "Provider name cannot be empty"
 custom_oauth.has_bindings: "Cannot delete provider with existing user bindings"
 custom_oauth.binding_not_found: "OAuth binding not found"
 custom_oauth.provider_id_field_invalid: "Could not extract user ID from provider response"
+
+# Contribution messages
+contribution.key_dead_title: "Your contributed upstream key was disabled"
+contribution.key_dead_content: "The upstream key you contributed for {{.Upstream}} was rejected by the upstream (401 Unauthorized). It has been disabled in the shared channel, its reward subscription has been cancelled, and it can no longer be submitted by anyone."
