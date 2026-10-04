@@ -21,6 +21,7 @@ import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
+import { ContributionCatalogSection } from './contribution-catalog/contribution-catalog-section'
 import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
@@ -100,6 +101,11 @@ const OPERATIONS_SECTIONS = [
         defaultEnabled={Boolean(settings.LogConsumeEnabled)}
       />
     ),
+  },
+  {
+    id: 'contribution-catalog',
+    titleKey: 'Contributed Upstreams',
+    build: () => <ContributionCatalogSection />,
   },
   {
     id: 'performance',
