@@ -6885,6 +6885,7 @@
     "Created a contributable upstream entry": "Создана запись участвуемого источника",
     "Delete upstream": "Удалить источник",
     "Deleted a contributable upstream entry": "Удалена запись участвуемого источника",
+    "Disabled a contributed upstream key": "Отключён переданный ключ внешнего сервиса",
     "Edit upstream": "Изменить источник",
     "Failed to create contribution entry": "Не удалось создать запись",
     "Failed to delete contribution entry": "Не удалось удалить запись",

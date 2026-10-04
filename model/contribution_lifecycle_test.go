@@ -250,14 +250,188 @@ func TestContributionPoolingLifecycle(t *testing.T) {
 		require.Len(t, mine, 1)
 	})
 
-	// The terminal half of the lifecycle - a probe judging the key dead, the
-	// release pipeline disabling it in the host channel and cancelling the reward
-	// subscription, and the user-initiated revoke that frees the fingerprint - is
-	// owned by tickets 06 and 07. They extend this file.
-	// TODO(ticket 06/07): dead/revoked terminal assertions. Nothing here fakes
-	// them: MarkContributionDead, MarkContributionRevoked and
-	// ReleaseContributionFingerprint only become meaningful once the release
-	// pipeline that calls them exists.
+}
+
+// TestContributionReleaseFreesFingerprintOnlyWhenAsked pins the caller-controlled
+// half of the terminal transition: death keeps the fingerprint forever, so only an
+// explicit release (the user-initiated revoke) may free it.
+func TestContributionReleaseFreesFingerprintOnlyWhenAsked(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+	const contributedKey = "sk-contribution-released"
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, contributedKey))
+
+	contribution := &Contribution{
+		UserId:         401,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+	}
+	require.NoError(t, contribution.Create())
+	fingerprint := *contribution.KeyFingerprint
+
+	require.NoError(t, ReleaseContribution(contribution, contributedKey, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+
+	// The record is retained for audit, but its fingerprint is NULL: exactly the
+	// shape that lets the same key be submitted again.
+	_, err := GetContributionByFingerprint(fingerprint)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a released fingerprint no longer identifies the record")
+	var released Contribution
+	require.NoError(t, DB.Where("id = ?", contribution.Id).First(&released).Error)
+	assert.Equal(t, ContributionStatusRevoked, released.Status)
+	assert.Nil(t, released.KeyFingerprint)
+
+	resubmitted := &Contribution{
+		UserId:         402,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(fingerprint),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+	}
+	require.NoError(t, resubmitted.Create(), "release makes the same key submittable again")
+	assert.NotEqual(t, contribution.Id, resubmitted.Id)
+}
+
+// TestContributionDeathIsTerminal is the model-layer main seam of the release
+// pipeline: one call must disable the key in the host channel, cancel the reward
+// subscription and move the record to its terminal status, and each of those
+// effects is asserted through the public model API so the model/service import
+// cycle cannot hide a missing step.
+func TestContributionDeathIsTerminal(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	plan := &SubscriptionPlan{
+		Id:               9502,
+		Title:            "Contribution reward",
+		Enabled:          true,
+		DurationUnit:     SubscriptionDurationMonth,
+		DurationValue:    1,
+		TotalAmount:      1000,
+		QuotaResetPeriod: SubscriptionResetDaily,
+	}
+	require.NoError(t, DB.Create(plan).Error)
+
+	contributor := &User{
+		Id:          401,
+		Username:    "contribution-death",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(contributor).Error)
+
+	const contributedKey = "sk-contribution-dead"
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, contributedKey))
+
+	contribution := &Contribution{
+		UserId:         contributor.Id,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+	subscription, err := GrantContributionReward(contribution, plan.Id)
+	require.NoError(t, err)
+	require.NotNil(t, subscription)
+	fingerprint := *contribution.KeyFingerprint
+
+	require.NoError(t, ReleaseContribution(contribution, contributedKey, ContributionStatusDead, ContributionReasonUpstreamUnauthorized, false))
+
+	// The record survives - never deleted - carrying the terminal status and the
+	// machine-readable reason the frontend localizes, and it leaves the probe's
+	// input set so a repeated probe cannot see it again.
+	stored, err := GetContributionByFingerprint(fingerprint)
+	require.NoError(t, err)
+	assert.Equal(t, ContributionStatusDead, stored.Status)
+	assert.Equal(t, ContributionReasonUpstreamUnauthorized, stored.Reason)
+	assert.NotZero(t, stored.ReasonTime)
+	active, err := GetAllActiveContributions()
+	require.NoError(t, err)
+	assert.Empty(t, active, "a dead contribution is no longer probed")
+
+	// The key is still physically present in the host channel - an administrator
+	// reclaims it with the existing cleanup action, not with this transition - but
+	// it is auto-disabled with the reason recorded against its index.
+	channel := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, "host-key-one\n"+contributedKey, channel.Key, "death never deletes the key")
+	assert.Equal(t, common.ChannelStatusAutoDisabled, channel.GetMultiKeyStatus(1))
+	assert.Equal(t, ContributionReasonUpstreamUnauthorized, channel.ChannelInfo.MultiKeyDisabledReason[1])
+
+	// ... and it is no longer selectable for relay traffic: polling reaches every
+	// enabled key in order, so three picks that all land on the surviving key prove
+	// the dead one was skipped rather than merely not picked first.
+	for pick := range 3 {
+		key, _, pickErr := channel.GetNextEnabledKey()
+		require.Nil(t, pickErr, "pick %d", pick)
+		assert.Equal(t, "host-key-one", key, "a dead key must never be selected")
+	}
+
+	// The reward is cancelled, not deleted, and its granted quota is not clawed
+	// back: the record of what the contributor was owed survives for the audit.
+	cancelled, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", cancelled.Status)
+	assert.Less(t, cancelled.EndTime, subscription.EndTime, "the reward stops at the moment of death")
+	assert.LessOrEqual(t, cancelled.EndTime, common.GetTimestamp())
+	assert.EqualValues(t, subscription.AmountTotal, cancelled.AmountTotal)
+	assert.EqualValues(t, subscription.AmountUsed, cancelled.AmountUsed)
+
+	// The fingerprint stays occupied forever: neither the contributor nor anyone
+	// else may submit that key again, and no active record holds it any more.
+	second := &Contribution{
+		UserId:         402,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(fingerprint),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.Error(t, second.Create(), "a dead fingerprint is blocked forever")
+	_, err = LockAndGetActiveContributionByFingerprint(DB, fingerprint)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	// A repeated kill is a no-op. The key is re-enabled and the subscription's end
+	// time is moved to a sentinel first, so a second release would be visible as a
+	// second disable and a second cancellation instead of passing by construction.
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", subscription.Id).
+		Update("end_time", int64(12345)).Error)
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, contributedKey))
+
+	require.NoError(t, ReleaseContribution(contribution, contributedKey, ContributionStatusDead, ContributionReasonUpstreamUnauthorized, false))
+
+	untouched := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, common.ChannelStatusEnabled, untouched.GetMultiKeyStatus(1), "a repeated kill must not disable the key again")
+	stillCancelled, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.EqualValues(t, 12345, stillCancelled.EndTime, "a repeated kill must not cancel the subscription again")
+	movedAgain, err := MarkContributionDead(contribution.Id, ContributionReasonUpstreamUnauthorized)
+	require.NoError(t, err)
+	assert.False(t, movedAgain, "the terminal transition is a compare-and-set on the active status")
+
+	// A no-op leaves the caller's struct untouched, which is how the probe task
+	// tells "I performed the transition" from "a revoke or an earlier pass already
+	// did" and skips its own audit and notification. The struct is reset to the
+	// stale value a caller would have read before the first kill.
+	contribution.Status = ContributionStatusActive
+	require.NoError(t, ReleaseContribution(contribution, contributedKey, ContributionStatusDead, ContributionReasonUpstreamUnauthorized, false))
+	assert.Equal(t, ContributionStatusActive, contribution.Status, "a no-op must not report a transition it did not perform")
 }
 
 // The contribution table is created by AutoMigrate on every supported database,

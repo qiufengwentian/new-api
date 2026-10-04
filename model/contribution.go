@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -281,6 +282,84 @@ func markContributionTerminal(id int, status string, reason string) (bool, error
 		return false, result.Error
 	}
 	return result.RowsAffected > 0, nil
+}
+
+// HasActiveContributions reports whether any contributed key is still pooled, so
+// the scheduled liveness probe creates no task row - and issues no upstream call
+// - while the pool is empty. A read failure reports false for the same reason:
+// the next pass retries instead of the probe failing forever on a transient
+// database error.
+func HasActiveContributions() bool {
+	var id int
+	err := DB.Model(&Contribution{}).
+		Where("status = ?", ContributionStatusActive).
+		Limit(1).
+		Pluck("id", &id).Error
+	return err == nil && id != 0
+}
+
+// ReleaseContribution is the single terminal transition of a contribution. It
+// compare-and-sets the record to status, auto-disables the contributed key in the
+// host channel with the reason, cancels the reward subscription, and - for a
+// revoke only - releases the key fingerprint.
+//
+// The ordering is deliberate and fail-safe. The compare-and-set runs first so a
+// record already in a terminal status (a repeated probe 401, a revoke racing the
+// probe) is a no-op that never disables a key twice or cancels a second
+// subscription. A no-op leaves the caller's contribution struct untouched, so the
+// caller can tell "I performed the transition" from "somebody else already did" by
+// looking at contribution.Status and skip its own audit and notification.
+//
+// The key is then disabled before the reward is cancelled: a dead key that keeps
+// serving traffic is the expensive failure, an over-running reward is not. Each
+// step logs and returns its own failure, and a partial failure is never reported as
+// success - but the record is already terminal at that point, so the probe does not
+// retry it either. Nothing is ever deleted: the record stays for audit, the key
+// text stays in the channel until an administrator reclaims it with the existing
+// cleanup action, and already-granted subscription quota is not clawed back.
+//
+// plainKey is the plaintext key the caller resolved from the host channel's key
+// list; death and revoke are both addressed by key string because deleting one
+// key renumbers the indexes of every later key.
+func ReleaseContribution(contribution *Contribution, plainKey string, status string, reason string, releaseFingerprint bool) error {
+	if contribution == nil || contribution.Id <= 0 {
+		return errors.New("invalid contribution")
+	}
+
+	moved, err := markContributionTerminal(contribution.Id, status, reason)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to move contribution %d to status %s: %v", contribution.Id, status, err))
+		return err
+	}
+	if !moved {
+		// Already terminal: the transition happened once and its side effects
+		// must not be repeated.
+		return nil
+	}
+	contribution.Status = status
+	contribution.Reason = reason
+	contribution.ReasonTime = common.GetTimestamp()
+
+	if err := SetChannelKeyStatus(contribution.HostChannelId, plainKey, common.ChannelStatusAutoDisabled, reason); err != nil {
+		common.SysError(fmt.Sprintf("failed to auto-disable the key of contribution %d in channel %d: %v", contribution.Id, contribution.HostChannelId, err))
+		return err
+	}
+
+	if contribution.SubscriptionId > 0 {
+		if _, err := AdminInvalidateUserSubscription(contribution.SubscriptionId); err != nil {
+			common.SysError(fmt.Sprintf("failed to cancel subscription %d of contribution %d: %v", contribution.SubscriptionId, contribution.Id, err))
+			return err
+		}
+	}
+
+	if releaseFingerprint {
+		if err := ReleaseContributionFingerprint(contribution.Id); err != nil {
+			common.SysError(fmt.Sprintf("failed to release the fingerprint of contribution %d: %v", contribution.Id, err))
+			return err
+		}
+		contribution.KeyFingerprint = nil
+	}
+	return nil
 }
 
 // ReleaseContributionFingerprint sets the fingerprint to NULL, freeing the key

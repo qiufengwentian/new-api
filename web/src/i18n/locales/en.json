@@ -6885,6 +6885,7 @@
     "Created a contributable upstream entry": "Created a contributable upstream entry",
     "Delete upstream": "Delete upstream",
     "Deleted a contributable upstream entry": "Deleted a contributable upstream entry",
+    "Disabled a contributed upstream key": "Disabled a contributed upstream key",
     "Edit upstream": "Edit upstream",
     "Failed to create contribution entry": "Failed to create contribution entry",
     "Failed to delete contribution entry": "Failed to delete contribution entry",

@@ -296,3 +296,7 @@ custom_oauth.name_empty: "提供商名称不能为空"
 custom_oauth.has_bindings: "无法删除已有用户绑定的提供商"
 custom_oauth.binding_not_found: "OAuth 绑定不存在"
 custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户 ID"
+
+# Contribution messages
+contribution.key_dead_title: "你贡献的上游 Key 已被禁用"
+contribution.key_dead_content: "你为 {{.Upstream}} 贡献的上游 Key 被上游判为无效（401 Unauthorized）：它已在共享渠道中被自动禁用，对应回馈订阅已取消，并且此后任何人都无法再提交它。"

@@ -21,6 +21,11 @@ const (
 	SystemTaskTypeModelUpdate    = "model_update"
 	SystemTaskTypeMidjourneyPoll = "midjourney_poll"
 	SystemTaskTypeAsyncTaskPoll  = "async_task_poll"
+
+	// SystemTaskTypeContributionProbe is the periodic per-key liveness probe of the
+	// contributed upstream keys: one run walks every pooled contribution and judges
+	// a key dead only on a 401 from the upstream.
+	SystemTaskTypeContributionProbe = "contribution_probe"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")
