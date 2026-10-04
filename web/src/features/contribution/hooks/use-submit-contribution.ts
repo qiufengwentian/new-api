@@ -23,7 +23,10 @@ import { toast } from 'sonner'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { submitContribution } from '../api'
-import { contributionSubmitRejectionText } from '../constants'
+import {
+  CONTRIBUTION_SUBMIT_REJECTION_MESSAGES,
+  contributionRejectionText,
+} from '../constants'
 import type {
   ContributionSubmitResponse,
   ContributionSubmitValues,
@@ -52,7 +55,10 @@ export function useSubmitContribution() {
         toast.success(i18next.t('Upstream key submitted successfully'))
         return
       }
-      const text = contributionSubmitRejectionText(response)
+      const text = contributionRejectionText(
+        response,
+        CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
+      )
       if (text === '') {
         handleServerError(response)
         return

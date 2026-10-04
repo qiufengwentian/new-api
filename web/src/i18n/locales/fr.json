@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "Cet amont n'est pas ouvert à la contribution.",
     "This upstream key failed validation. Check the key and that it still has quota.": "Cette clé amont n'a pas passé la validation. Vérifiez la clé et qu'elle dispose encore de quota.",
     "This upstream key has already been contributed.": "Cette clé amont a déjà été contribuée.",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "Cette clé amont a été rejetée par le service amont et ne peut plus être contribuée.",
     "This upstream key is already in the shared pool.": "Cette clé amont est déjà dans le pool partagé.",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "Trop de tentatives de validation échouées. Veuillez patienter {{seconds}} secondes avant de réessayer.",
     "Updated a contributable upstream entry": "A mis à jour une entrée d'amont contribuable",

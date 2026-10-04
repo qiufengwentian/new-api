@@ -100,10 +100,14 @@ func EnabledEntries() []ContributionEntry {
 	return enabled
 }
 
-// EntryByChannelType resolves the entry that owns a channel type.
+// EntryByChannelType resolves the ENABLED entry that owns a channel type. A
+// disabled entry is an admin-side draft: it must not resolve a submission (the
+// admin may have disabled entry A and enabled entry B for the same channel type,
+// and submit has to follow B) and it must not name the upstream in a contributor
+// notice. Callers that need the whole catalog read AllEntries.
 func EntryByChannelType(channelType int) (ContributionEntry, bool) {
 	for _, entry := range AllEntries() {
-		if entry.ChannelType == channelType {
+		if entry.ChannelType == channelType && entry.Enabled {
 			return entry, true
 		}
 	}

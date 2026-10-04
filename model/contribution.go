@@ -27,9 +27,11 @@ const (
 	// grant ("admin") or a purchase ("order").
 	ContributionRewardSource = "contribution"
 
-	// contributionKeyMask is what a contributed key looks like once stored. It
-	// carries nothing of the plaintext - see MaskContributionKey.
-	contributionKeyMask = "************"
+	// ContributionKeyMask is what a contributed key looks like once stored: a fixed
+	// redaction that carries no character of the plaintext. It is a constant rather
+	// than a function of the key precisely so that no implementation can derive a
+	// preview, a prefix or a length from a live third-party credential.
+	ContributionKeyMask = "************"
 )
 
 // ContributionKeyFingerprint is a keyed HMAC (common.GenerateHMAC, keyed by
@@ -48,6 +50,20 @@ const (
 // only has to identify a key uniquely within one host channel configuration.
 func ContributionKeyFingerprint(hostBaseURL string, key string) string {
 	return common.GenerateHMAC(hostBaseURL + "\n" + key)
+}
+
+// ContributionKeyHash is a keyed HMAC over the raw upstream key alone - no host
+// channel base URL - and is what makes a dead key final globally: the same key
+// submitted under a different enabled channel type, or after an administrator
+// edits the host channel base URL, still hashes to the same value.
+//
+// It is stored alongside the record, indexed, and never in plaintext: the key
+// itself never enters the table. The per-record identity stays the base-url
+// fingerprint (ContributionKeyFingerprint), because that is what the probe matches
+// against the host channel's key list; the hash only answers "has this exact key
+// already been judged dead by anyone, anywhere?".
+func ContributionKeyHash(key string) string {
+	return common.GenerateHMAC("key:" + key)
 }
 
 // ResolveContributedKey recovers the plaintext key a contribution owns inside its
@@ -93,22 +109,6 @@ func IsContributionKeyDead(httpStatusCode int) bool {
 	return httpStatusCode == http.StatusUnauthorized
 }
 
-// MaskContributionKey returns the display-only mask stored with a contribution
-// record.
-//
-// Upstream keys are live credentials handed over by a third party, so the mask
-// reveals no character of the key at all - unlike model.MaskTokenKey, which
-// keeps a first/last preview. Contribution rows are told apart by id and
-// creation time, never by a key fragment that could be replayed from a
-// screenshot, a support ticket or a log line. One shared helper keeps every
-// surface (submit response, contribution list, admin views) redacting alike.
-func MaskContributionKey(key string) string {
-	if key == "" {
-		return ""
-	}
-	return contributionKeyMask
-}
-
 // Contribution is one accepted contribution of an upstream key: who handed it
 // over, which channel type and host channel it feeds, and which reward instance
 // (if any) it produced.
@@ -125,9 +125,19 @@ type Contribution struct {
 	// released fingerprint becomes submittable again while the row is retained
 	// for audit. json:"-" keeps it out of every response.
 	KeyFingerprint *string `json:"-" gorm:"uniqueIndex;size:64"`
-	KeyMask        string  `json:"key_mask" gorm:"size:32"`
-	SubscriptionId int     `json:"subscription_id"`
-	Status         string  `json:"status" gorm:"size:16;index"`
+	// KeyHash is the keyed HMAC of the plaintext key alone (ContributionKeyHash).
+	// It is indexed but not unique: a revoked record frees its fingerprint and the
+	// same key may legitimately be submitted again, producing a second row. Its only
+	// consumer is HasDeadContributionForKeyHash, which makes a death final for every
+	// user and every channel type. json:"-" keeps it out of every response.
+	KeyHash string `json:"-" gorm:"size:64;index"`
+	KeyMask string `json:"key_mask" gorm:"size:32"`
+	// Agreement is the consent statement the contributor accepted at submission
+	// time, recorded verbatim so the wording they agreed to survives a later change
+	// of the served agreement. It is audit material and never part of a response.
+	Agreement      string `json:"-" gorm:"type:text"`
+	SubscriptionId int    `json:"subscription_id"`
+	Status         string `json:"status" gorm:"size:16;index"`
 	// RewardGranted is false when the submission was accepted as redundant: the
 	// user already holds an active contribution for this channel type.
 	RewardGranted bool   `json:"reward_granted"`
@@ -242,6 +252,54 @@ func HasActiveContributionForType(userId, channelType, excludeId int) (bool, err
 	}
 	var count int64
 	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// HasRewardedActiveContributionForType reports whether the user already holds a
+// live contribution for this channel type that was actually rewarded - the record
+// carries RewardGranted and points at a subscription instance.
+//
+// "One upstream counts once" must be judged on a reward that exists, not on a row
+// that merely promised one: a submission whose reward grant failed leaves an
+// active, unrewarded record, and treating that as "already rewarded" would lock
+// the contributor out of the reward forever. An unrewarded active record therefore
+// never fails this query.
+func HasRewardedActiveContributionForType(userId, channelType int) (bool, error) {
+	if userId <= 0 {
+		return false, errors.New("invalid user id")
+	}
+	if channelType <= 0 {
+		return false, errors.New("invalid channel type")
+	}
+	var count int64
+	if err := DB.Model(&Contribution{}).
+		Where("user_id = ? AND channel_type = ? AND status = ? AND reward_granted = ? AND subscription_id > 0",
+			userId, channelType, ContributionStatusActive, true).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// HasDeadContributionForKeyHash reports whether any contribution record holds this
+// key hash in the dead terminal status, regardless of the user, the channel type or
+// the host channel base URL the record was created under.
+//
+// This is the global finality rule of a dead key: once an upstream has rejected a
+// key with a 401, the key can never be submitted again by anyone, for any channel
+// type - not even after an administrator changes a host channel base URL (which
+// would change the per-record fingerprint). A revoked record deliberately does not
+// count: withdrawal releases the key so its owner may contribute it again.
+func HasDeadContributionForKeyHash(keyHash string) (bool, error) {
+	if keyHash == "" {
+		return false, errors.New("contribution key hash is empty")
+	}
+	var count int64
+	if err := DB.Model(&Contribution{}).
+		Where("key_hash = ? AND status = ?", keyHash, ContributionStatusDead).
+		Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil

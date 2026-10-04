@@ -24,7 +24,10 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { submitContribution } from '../api'
 import { ContributePanel } from '../components/contribute-panel'
-import { contributionSubmitRejectionText } from '../constants'
+import {
+  CONTRIBUTION_SUBMIT_REJECTION_MESSAGES,
+  contributionRejectionText,
+} from '../constants'
 import type { ContributionCatalog, ContributionSubmitData } from '../types'
 
 vi.mock('../api')
@@ -180,7 +183,9 @@ it('clears the key input and shows the reward after a successful submit', async 
   // for, the plan, the quota split and the expiry, plus the subscription status.
   expect(screen.getByText(/Channel Type/)).toBeInTheDocument()
   expect(screen.getByText(/Pro plan/)).toBeInTheDocument()
-  expect(screen.getByText(/250/)).toBeInTheDocument()
+  // The quota split is rendered through the project quota formatter, not as raw
+  // numbers: 250 / 1000 quota units at the default 500000 units per USD.
+  expect(screen.getByText(/\$0\.0005 \/ \$0\.002/)).toBeInTheDocument()
   expect(screen.getByText(/Expires at/)).toBeInTheDocument()
   expect(screen.getByText('Active')).toBeInTheDocument()
   expect(screen.getByLabelText('Upstream API Key')).toHaveValue('')
@@ -228,10 +233,13 @@ it('keeps the key in the form when the submission is refused', async () => {
 // The cooldown refusal has to tell the user how long to wait; the server sends
 // the remaining seconds with the code.
 it('renders the cooldown wait time for a rate limited submission', () => {
-  const text = contributionSubmitRejectionText({
-    code: 'contribution_rate_limited',
-    retry_after_seconds: 420,
-  })
+  const text = contributionRejectionText(
+    {
+      code: 'contribution_rate_limited',
+      retry_after_seconds: 420,
+    },
+    CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
+  )
 
   expect(text).toContain('420')
 })
@@ -240,7 +248,10 @@ it('renders the cooldown wait time for a rate limited submission', () => {
 // loudly: the user reads a localized reason instead of a successful response.
 it('localizes the reward grant failure', () => {
   expect(
-    contributionSubmitRejectionText({ code: 'contribution_reward_failed' })
+    contributionRejectionText(
+      { code: 'contribution_reward_failed' },
+      CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
+    )
   ).toBe(
     'The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.'
   )
@@ -248,9 +259,12 @@ it('localizes the reward grant failure', () => {
 
 it('falls back to the server message for an unknown rejection code', () => {
   expect(
-    contributionSubmitRejectionText({
-      code: 'contribution_something_new',
-      message: 'the server explained it',
-    })
+    contributionRejectionText(
+      {
+        code: 'contribution_something_new',
+        message: 'the server explained it',
+      },
+      CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
+    )
   ).toBe('the server explained it')
 })

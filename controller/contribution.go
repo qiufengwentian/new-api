@@ -33,7 +33,6 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/contribution_setting"
 	"github.com/samber/hot"
@@ -58,6 +57,7 @@ const (
 	contributionCodeTypeUnknown      = "contribution_channel_type_unknown"
 	contributionCodeRateLimited      = "contribution_rate_limited"
 	contributionCodeKeyInvalid       = "contribution_key_invalid"
+	contributionCodeKeyDead          = "contribution_key_dead"
 	contributionCodeFingerprintTaken = "contribution_fingerprint_taken"
 	contributionCodeAlreadyPooled    = "contribution_key_already_pooled"
 	contributionCodePoolingFailed    = "contribution_pooling_failed"
@@ -268,8 +268,11 @@ func GetMyContributions(c *gin.Context) {
 	}
 
 	// A record points at the reward instance it produced; caching the lookup keeps a
-	// long list from re-reading the same subscription.
+	// long list from re-reading the same subscription. The plan titles are cached the
+	// same way, so a page of rewards from one catalog plan does not re-read that plan
+	// once per row.
 	subscriptions := make(map[int]*model.UserSubscription, len(contributions))
+	planTitles := make(map[int]string)
 	items := make([]gin.H, 0, len(contributions))
 	for i := range contributions {
 		contribution := &contributions[i]
@@ -289,7 +292,7 @@ func GetMyContributions(c *gin.Context) {
 			}
 			subscription = cached
 		}
-		items = append(items, contributionSummary(contribution, subscription))
+		items = append(items, contributionSummary(c, contribution, subscription, planTitles))
 	}
 
 	common.ApiSuccess(c, gin.H{
@@ -309,17 +312,6 @@ func contributionAccountSummary(userId int) gin.H {
 		count = 0
 	}
 	return gin.H{"channel_type_count": count}
-}
-
-// contributionChannelTypeName names a channel type the way the contributor knows
-// it: the administrator's catalog name when an entry still exists, otherwise the
-// built-in channel type name. A contribution outlives catalog edits, so the list
-// must not lose its label when an entry is deleted or renamed.
-func contributionChannelTypeName(channelType int) string {
-	if entry, found := contribution_setting.EntryByChannelType(channelType); found && strings.TrimSpace(entry.Name) != "" {
-		return entry.Name
-	}
-	return constant.GetChannelTypeName(channelType)
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +436,7 @@ func redactContributionKey(message string, key string) string {
 	if key == "" {
 		return message
 	}
-	return strings.ReplaceAll(message, key, model.MaskContributionKey(key))
+	return strings.ReplaceAll(message, key, model.ContributionKeyMask)
 }
 
 // contributionRejectRateLimited answers a cooled-down user with the wait time so
@@ -480,8 +472,10 @@ func SubmitContribution(c *gin.Context) {
 		contributionReject(c, contributionCodeGlobalDisabled, "the contribution feature is disabled")
 		return
 	}
+	// The enabled entry of this channel type: a disabled one never owns a
+	// submission, so an admin who disabled A and enabled B has B resolve here.
 	entry, found := contribution_setting.EntryByChannelType(request.ChannelType)
-	if !found || !entry.Enabled {
+	if !found {
 		contributionReject(c, contributionCodeTypeUnknown, fmt.Sprintf("channel type %d is not open for contribution", request.ChannelType))
 		return
 	}
@@ -515,11 +509,54 @@ func SubmitContribution(c *gin.Context) {
 		return
 	}
 
-	// The fingerprint is the identity of a contributed key. A record that still
-	// holds it - active or dead - blocks the submission; a revoked record has a
-	// NULL fingerprint and does not.
+	// Death is final for the key itself, not for the record's host channel. The
+	// keyed hash of the plaintext key is checked first, so a key an upstream ever
+	// rejected cannot be submitted again by anyone, for any channel type - including
+	// one whose host channel base URL would produce a different fingerprint. A
+	// revoked record never counts (the query only matches dead), so withdrawal
+	// still frees the key.
+	keyHash := model.ContributionKeyHash(key)
+	if hasDead, deadErr := model.HasDeadContributionForKeyHash(keyHash); deadErr != nil {
+		// A failed lookup is logged, not guessed at: the submission proceeds and the
+		// failure leaves a trace, instead of turning a transient read error into a
+		// permanent refusal.
+		common.SysError(fmt.Sprintf("failed to read dead contributions for a submitted key: %v", deadErr))
+	} else if hasDead {
+		contributionReject(c, contributionCodeKeyDead, "this upstream key was judged dead by the upstream and can no longer be contributed")
+		return
+	}
+
+	// The fingerprint is the per-record identity of a contributed key. A record
+	// that still holds it - active or dead - blocks the submission; a revoked record
+	// has a NULL fingerprint and does not.
 	fingerprint := model.ContributionKeyFingerprint(hostChannel.GetBaseURL(), key)
 	if existing, lookupErr := model.GetContributionByFingerprint(fingerprint); lookupErr == nil && existing != nil {
+		// Idempotent recovery: the contributor's own record is live and was promised
+		// a reward whose grant failed - it is flagged rewarded but points at no
+		// subscription. The key is already recorded and pooled, so only the missing
+		// grant is retried here and the normal success payload is answered. Any other
+		// record - someone else's, a redundant one, or one already rewarded - is a
+		// taken fingerprint.
+		if existing.UserId == userId && existing.Status == model.ContributionStatusActive &&
+			existing.RewardGranted && existing.SubscriptionId == 0 {
+			subscription, grantErr := model.GrantContributionReward(existing, plan.Id)
+			if grantErr != nil {
+				common.SysError(redactContributionKey(fmt.Sprintf(
+					"failed to recover the contribution reward of contribution %d (plan %d) for user %d: %v",
+					existing.Id, plan.Id, userId, grantErr), key))
+				contributionReject(c, contributionCodeRewardFailed,
+					"the contribution was recorded but its reward subscription could not be issued; please contact your administrator")
+				return
+			}
+			recordContributionGrantAudit(c, existing, plan.Id, subscription.Id)
+			recordContributionSubmitAudit(c, existing, true)
+			common.ApiSuccess(c, gin.H{
+				"contribution": contributionSummary(c, existing, subscription, map[int]string{}),
+				"reward":       contributionRewardSummary(subscription, entry.ChannelType, plan.Title),
+				"redundant":    false,
+			})
+			return
+		}
 		contributionReject(c, contributionCodeFingerprintTaken, "this upstream key has already been contributed")
 		return
 	}
@@ -541,16 +578,19 @@ func SubmitContribution(c *gin.Context) {
 		return
 	}
 
-	// "One upstream counts once": a user who already holds an active contribution
-	// for this channel type gets no second reward, but the key still widens the
-	// pool. A dead or revoked predecessor does not block a fresh grant.
+	// "One upstream counts once": a user who already holds a live contribution for
+	// this channel type that was actually rewarded gets no second reward, but the
+	// key still widens the pool. The query requires the reward to exist
+	// (reward_granted and a subscription instance), so an active record whose grant
+	// failed never makes a later submission redundant; a dead or revoked
+	// predecessor does not block a fresh grant either.
 	rewardGranted := true
-	if hasActive, err := model.HasActiveContributionForType(userId, entry.ChannelType, 0); err != nil {
+	if hasRewarded, err := model.HasRewardedActiveContributionForType(userId, entry.ChannelType); err != nil {
 		// A failed lookup is logged, not guessed at: the submission still grants
 		// (the grant itself is idempotent per record), and the failure leaves a
 		// trace instead of silently changing the reward decision.
-		common.SysError(fmt.Sprintf("failed to read active contributions of user %d for channel type %d: %v", userId, entry.ChannelType, err))
-	} else if hasActive {
+		common.SysError(fmt.Sprintf("failed to read rewarded contributions of user %d for channel type %d: %v", userId, entry.ChannelType, err))
+	} else if hasRewarded {
 		rewardGranted = false
 	}
 
@@ -559,7 +599,9 @@ func SubmitContribution(c *gin.Context) {
 		ChannelType:    entry.ChannelType,
 		HostChannelId:  hostChannel.Id,
 		KeyFingerprint: common.GetPointer(fingerprint),
-		KeyMask:        model.MaskContributionKey(key),
+		KeyHash:        keyHash,
+		KeyMask:        model.ContributionKeyMask,
+		Agreement:      contribution_setting.AgreementText,
 		Status:         model.ContributionStatusActive,
 		RewardGranted:  rewardGranted,
 	}
@@ -592,31 +634,13 @@ func SubmitContribution(c *gin.Context) {
 		}
 		// The grant is audited with the plan and instance it produced - never the
 		// key, which this whole request keeps out of every durable surface.
-		model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
-			fmt.Sprintf("Granted the contribution reward for channel type %d", entry.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
-				Action: "contribution.grant",
-				Params: model.AuditFields{
-					"contribution_id": contribution.Id,
-					"channel_type":    entry.ChannelType,
-					"plan_id":         plan.Id,
-					"subscription_id": rewardSubscription.Id,
-				},
-			}, c)
+		recordContributionGrantAudit(c, contribution, plan.Id, rewardSubscription.Id)
 	}
 
-	model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
-		fmt.Sprintf("Submitted an upstream key for channel type %d", entry.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
-			Action: "contribution.submit",
-			Params: model.AuditFields{
-				"contribution_id": contribution.Id,
-				"channel_type":    entry.ChannelType,
-				"host_channel_id": hostChannel.Id,
-				"reward_granted":  rewardGranted,
-			},
-		}, c)
+	recordContributionSubmitAudit(c, contribution, rewardGranted)
 
 	common.ApiSuccess(c, gin.H{
-		"contribution": contributionSummary(contribution, rewardSubscription),
+		"contribution": contributionSummary(c, contribution, rewardSubscription, map[int]string{}),
 		"reward":       contributionRewardSummary(rewardSubscription, entry.ChannelType, plan.Title),
 		"redundant":    !rewardGranted,
 	})
@@ -657,28 +681,36 @@ func contributionSubscriptionSummary(subscription *model.UserSubscription, planT
 // contributionSummary is the one user-visible shape of a contribution record,
 // shared by the submit response, the withdrawal response and the contribution
 // list. It carries the mask only: the plaintext key and the fingerprint never
-// leave the database. The channel type is named from the live catalog, falling
-// back to the built-in channel type name, and subscription is the reward instance
-// the record points at, or nil when it granted none or the instance is gone.
-func contributionSummary(contribution *model.Contribution, subscription *model.UserSubscription) gin.H {
+// leave the database. The channel type is named by the shared service resolver,
+// and subscription is the reward instance the record points at, or nil when it
+// granted none or the instance is gone.
+//
+// planTitles is the request-scoped plan-title cache: the list endpoint shares one
+// map across its rows, so a page of contributions that were all rewarded from the
+// same catalog plan reads that plan once instead of once per row. A single-record
+// caller passes a fresh map.
+func contributionSummary(c *gin.Context, contribution *model.Contribution, subscription *model.UserSubscription, planTitles map[int]string) gin.H {
 	planTitle := ""
 	subscriptionStatus := ""
 	if subscription != nil {
 		subscriptionStatus = subscription.Status
-		// The submit path already holds the plan it just granted from; every other
-		// reader resolves it from the instance the record points at.
 		if subscription.PlanId > 0 {
-			if plan, err := model.GetSubscriptionPlanById(subscription.PlanId); err == nil {
-				planTitle = plan.Title
-			} else {
-				common.SysLog(fmt.Sprintf("failed to read plan %d of subscription %d: %v", subscription.PlanId, subscription.Id, err))
+			title, cached := planTitles[subscription.PlanId]
+			if !cached {
+				if plan, err := model.GetSubscriptionPlanById(subscription.PlanId); err == nil {
+					title = plan.Title
+				} else {
+					common.SysLog(fmt.Sprintf("failed to read plan %d of subscription %d: %v", subscription.PlanId, subscription.Id, err))
+				}
+				planTitles[subscription.PlanId] = title
 			}
+			planTitle = title
 		}
 	}
 	return gin.H{
 		"id":                  contribution.Id,
 		"channel_type":        contribution.ChannelType,
-		"channel_type_name":   contributionChannelTypeName(contribution.ChannelType),
+		"channel_type_name":   service.ContributionUpstreamName(contribution.ChannelType, i18n.GetLangFromContext(c)),
 		"status":              contribution.Status,
 		"reason":              contribution.Reason,
 		"reason_time":         contribution.ReasonTime,
@@ -689,6 +721,39 @@ func contributionSummary(contribution *model.Contribution, subscription *model.U
 		"reward_granted":      contribution.RewardGranted,
 		"created_time":        contribution.CreatedTime,
 	}
+}
+
+// recordContributionGrantAudit writes the audit row of one reward grant. The
+// contribution, its channel type, the plan and the instance identify it for an
+// administrator; the key appears nowhere, so the audit trail is never a place to
+// recover a credential.
+func recordContributionGrantAudit(c *gin.Context, contribution *model.Contribution, planId, subscriptionId int) {
+	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
+		fmt.Sprintf("Granted the contribution reward for channel type %d", contribution.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
+			Action: "contribution.grant",
+			Params: model.AuditFields{
+				"contribution_id": contribution.Id,
+				"channel_type":    contribution.ChannelType,
+				"plan_id":         planId,
+				"subscription_id": subscriptionId,
+			},
+		}, c)
+}
+
+// recordContributionSubmitAudit writes the audit row of one accepted submission,
+// including the consent statement the contributor accepted at that moment.
+func recordContributionSubmitAudit(c *gin.Context, contribution *model.Contribution, rewardGranted bool) {
+	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
+		fmt.Sprintf("Submitted an upstream key for channel type %d", contribution.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
+			Action: "contribution.submit",
+			Params: model.AuditFields{
+				"contribution_id": contribution.Id,
+				"channel_type":    contribution.ChannelType,
+				"host_channel_id": contribution.HostChannelId,
+				"reward_granted":  rewardGranted,
+				"agreement":       contribution.Agreement,
+			},
+		}, c)
 }
 
 // validateContributionKey is the first-time liveness check of a submitted key:
@@ -797,7 +862,7 @@ func RevokeContribution(c *gin.Context) {
 	// audited or announced as this request's doing.
 	if contribution.Status == model.ContributionStatusRevoked {
 		recordContributionRevokeAudit(c, contribution)
-		notifyContributionRevoked(contribution)
+		service.NotifyContributionContributor(contribution, i18n.MsgContributionKeyRevokedTitle, i18n.MsgContributionKeyRevokedContent)
 	}
 	respondWithRevokedContribution(c, contribution.Id)
 }
@@ -823,7 +888,7 @@ func respondWithRevokedContribution(c *gin.Context, contributionId int) {
 			subscription = nil
 		}
 	}
-	common.ApiSuccess(c, gin.H{"contribution": contributionSummary(contribution, subscription)})
+	common.ApiSuccess(c, gin.H{"contribution": contributionSummary(c, contribution, subscription, map[int]string{})})
 }
 
 // recordContributionRevokeAudit writes the audit row of one withdrawal. The
@@ -841,33 +906,4 @@ func recordContributionRevokeAudit(c *gin.Context, contribution *model.Contribut
 				"host_channel_id": contribution.HostChannelId,
 			},
 		}, c)
-}
-
-// notifyContributionRevoked tells the contributor their withdrawal went through,
-// through the existing per-user notification channel (email, webhook, Bark or
-// Gotify) - the repo has no per-user in-site inbox to fall back on.
-//
-// The notice is best-effort: the key is already out of the pool and the reward
-// already cancelled, so a refused notification - the limit gate, an unreachable
-// webhook - is logged and never fails the withdrawal.
-func notifyContributionRevoked(contribution *model.Contribution) {
-	contributor, err := model.GetUserById(contribution.UserId, false)
-	if err != nil {
-		common.SysError(fmt.Sprintf("failed to load contributor %d to notify about the revoked contribution %d: %v",
-			contribution.UserId, contribution.Id, err))
-		return
-	}
-	setting := contributor.GetSetting()
-	upstream := fmt.Sprintf("channel type %d", contribution.ChannelType)
-	if entry, found := contribution_setting.EntryByChannelType(contribution.ChannelType); found && entry.Name != "" {
-		upstream = entry.Name
-	}
-	notice := dto.NewNotify(dto.NotifyTypeChannelUpdate,
-		i18n.Translate(setting.Language, i18n.MsgContributionKeyRevokedTitle),
-		i18n.Translate(setting.Language, i18n.MsgContributionKeyRevokedContent, map[string]any{"Upstream": upstream}),
-		nil)
-	if err := service.NotifyUser(contributor.Id, contributor.Email, setting, notice); err != nil {
-		common.SysLog(fmt.Sprintf("failed to notify contributor %d about the revoked contribution %d: %v",
-			contributor.Id, contribution.Id, err))
-	}
 }

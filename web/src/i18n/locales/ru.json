@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "Этот вышестоящий сервис не открыт для приёма ключей.",
     "This upstream key failed validation. Check the key and that it still has quota.": "Этот вышестоящий ключ не прошёл проверку. Проверьте ключ и наличие остатка.",
     "This upstream key has already been contributed.": "Этот вышестоящий ключ уже был передан.",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "Этот вышестоящий ключ был отклонён вышестоящим сервисом и больше не может быть передан.",
     "This upstream key is already in the shared pool.": "Этот вышестоящий ключ уже находится в общем пуле.",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "Слишком много неудачных попыток проверки. Подождите {{seconds}} секунд и попробуйте снова.",
     "Updated a contributable upstream entry": "Обновлена запись участвуемого источника",

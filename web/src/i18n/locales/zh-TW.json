@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "該上游未開放貢獻。",
     "This upstream key failed validation. Check the key and that it still has quota.": "該上游 Key 驗證失敗。請檢查 Key 是否正確且仍有額度。",
     "This upstream key has already been contributed.": "該上游 Key 已被提交過。",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "該上游 Key 已被上游判定為無效，無法再提交。",
     "This upstream key is already in the shared pool.": "該上游 Key 已在共享號池中。",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "驗證失敗次數過多，請等待 {{seconds}} 秒後再試。",
     "Updated a contributable upstream entry": "更新了一筆可貢獻上游項目",

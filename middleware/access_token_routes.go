@@ -144,10 +144,13 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/subscription/admin/user_subscriptions/:id":          accessTokenScopeRule("billing:write"),
 
 	// router/api-router.go: /api/contribution
-	"GET /api/contribution/catalog":          accessTokenScopeRule("wallet:read"),
-	"GET /api/contribution/mine":             accessTokenScopeRule("wallet:read"),
-	"POST /api/contribution/submit":          accessTokenScopeRule("wallet:write"),
-	"POST /api/contribution/revoke":          accessTokenScopeRule("wallet:write"),
+	"GET /api/contribution/catalog": accessTokenScopeRule("wallet:read"),
+	"GET /api/contribution/mine":    accessTokenScopeRule("wallet:read"),
+	// Submitting or withdrawing a contribution hands a third-party credential
+	// into (or out of) a shared channel, so it is a browser-session action: no
+	// personal access token may perform it, whatever scopes it carries.
+	"POST /api/contribution/submit":          accessTokenSessionRule,
+	"POST /api/contribution/revoke":          accessTokenSessionRule,
 	"GET /api/contribution/admin/catalog":    accessTokenScopeRule("option:read"),
 	"POST /api/contribution/admin/catalog":   accessTokenScopeRule("option:write"),
 	"PUT /api/contribution/admin/catalog":    accessTokenScopeRule("option:write"),

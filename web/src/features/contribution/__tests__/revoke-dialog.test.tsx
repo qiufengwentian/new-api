@@ -23,7 +23,10 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { revokeContribution } from '../api'
 import { RevokeContributionDialog } from '../components/revoke-contribution-dialog'
-import { contributionRevokeRejectionText } from '../constants'
+import {
+  CONTRIBUTION_REVOKE_REJECTION_MESSAGES,
+  contributionRejectionText,
+} from '../constants'
 import type { ContributionSummary } from '../types'
 
 vi.mock('../api')
@@ -110,17 +113,26 @@ it('leaves the record alone when the confirmation is cancelled', async () => {
 // rejection code resolves to its own localized text.
 it('localizes the withdrawal refusals', () => {
   expect(
-    contributionRevokeRejectionText({ code: 'contribution_not_found' })
+    contributionRejectionText(
+      { code: 'contribution_not_found' },
+      CONTRIBUTION_REVOKE_REJECTION_MESSAGES
+    )
   ).toBe('This contribution no longer exists.')
   expect(
-    contributionRevokeRejectionText({ code: 'contribution_dead_is_final' })
+    contributionRejectionText(
+      { code: 'contribution_dead_is_final' },
+      CONTRIBUTION_REVOKE_REJECTION_MESSAGES
+    )
   ).toBe(
     'This contribution was ended because the upstream rejected the key, so it cannot be revoked.'
   )
   expect(
-    contributionRevokeRejectionText({
-      code: 'contribution_something_new',
-      message: 'the server explained it',
-    })
+    contributionRejectionText(
+      {
+        code: 'contribution_something_new',
+        message: 'the server explained it',
+      },
+      CONTRIBUTION_REVOKE_REJECTION_MESSAGES
+    )
   ).toBe('the server explained it')
 })

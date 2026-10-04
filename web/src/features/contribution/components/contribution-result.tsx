@@ -20,8 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
-import { toIntlLocale } from '@/i18n/languages'
-import { formatNumber, formatTimestamp } from '@/lib/format'
+import { formatQuota, formatTimestamp } from '@/lib/format'
 
 import { contributionSubscriptionStatusBadge } from '../constants'
 import type { ContributionSubmitData } from '../types'
@@ -37,8 +36,7 @@ type ContributionResultProps = {
  * reward, because the server grants none.
  */
 export function ContributionResult(props: ContributionResultProps) {
-  const { t, i18n } = useTranslation()
-  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const { t } = useTranslation()
   const contribution = props.result.contribution
   const reward = props.result.reward
   const rewardStatus = contributionSubscriptionStatusBadge(reward?.status ?? '')
@@ -67,8 +65,8 @@ export function ContributionResult(props: ContributionResultProps) {
             </p>
             <p>
               {t('Plan')}: {reward.plan_title} (
-              {formatNumber(reward.amount_used, locale)} /{' '}
-              {formatNumber(reward.amount_total, locale)})
+              {formatQuota(reward.amount_used)} /{' '}
+              {formatQuota(reward.amount_total)})
             </p>
             <p>
               {t('Expires at')}: {formatTimestamp(reward.end_time)}

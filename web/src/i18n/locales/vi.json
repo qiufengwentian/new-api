@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "Nhà cung cấp này chưa mở để đóng góp.",
     "This upstream key failed validation. Check the key and that it still has quota.": "Khóa thượng nguồn này không vượt qua kiểm tra. Hãy kiểm tra khóa và xem còn hạn mức không.",
     "This upstream key has already been contributed.": "Khóa thượng nguồn này đã được đóng góp.",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "Khóa thượng nguồn này đã bị thượng nguồn từ chối và không thể được đóng góp nữa.",
     "This upstream key is already in the shared pool.": "Khóa thượng nguồn này đã có trong nhóm chia sẻ.",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "Quá nhiều lần kiểm tra thất bại. Vui lòng đợi {{seconds}} giây rồi thử lại.",
     "Updated a contributable upstream entry": "Đã cập nhật một mục nguồn có thể đóng góp",

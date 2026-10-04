@@ -277,7 +277,7 @@ func seedProbeContribution(t *testing.T, userId int, host *model.Channel, contri
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(model.ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
-		KeyMask:        model.MaskContributionKey(contributedKey),
+		KeyMask:        model.ContributionKeyMask,
 		SubscriptionId: subscriptionId,
 		Status:         model.ContributionStatusActive,
 		RewardGranted:  subscriptionId > 0,
