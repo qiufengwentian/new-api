@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 
@@ -733,6 +734,121 @@ func hasEnabledMultiKey(keys []string, statusList map[int]int) bool {
 		}
 	}
 	return false
+}
+
+// ErrChannelKeyAlreadyEnabled reports that a key could not be appended because the channel already
+// carries it in an enabled state.
+var ErrChannelKeyAlreadyEnabled = errors.New("channel key already enabled")
+
+// ErrChannelNotMultiKey reports that a key could not be appended because the channel is not in
+// multi-key mode.
+var ErrChannelNotMultiKey = errors.New("channel is not in multi-key mode")
+
+// GetMultiKeyStatus returns the effective status of the key at index; a missing entry means enabled.
+func (channel *Channel) GetMultiKeyStatus(index int) int {
+	if status, exists := channel.ChannelInfo.MultiKeyStatusList[index]; exists {
+		return status
+	}
+	return common.ChannelStatusEnabled
+}
+
+// RebuildChannelMultiKey rewrites a multi-key channel's newline-separated key list and its
+// per-index status maps after the key list changed. keepExisting decides whether the key at index
+// keeps its place, given its effective status; surviving keys are compacted in order with their
+// status entries and disabled reason/time entries re-indexed, and appended keys go to the end.
+// It reports how many keys were dropped and how many remain.
+func RebuildChannelMultiKey(channel *Channel, keepExisting func(index int, status int) bool, appended ...string) (removed int, remaining int) {
+	keys := channel.GetKeys()
+	kept := make([]string, 0, len(keys)+len(appended))
+	newStatusList := make(map[int]int)
+	newDisabledReason := make(map[int]string)
+	newDisabledTime := make(map[int]int64)
+
+	for index, key := range keys {
+		status := channel.GetMultiKeyStatus(index)
+		if !keepExisting(index, status) {
+			continue
+		}
+		kept = append(kept, key)
+		newIndex := len(kept) - 1
+		if status != common.ChannelStatusEnabled {
+			newStatusList[newIndex] = status
+		}
+		if reason, exists := channel.ChannelInfo.MultiKeyDisabledReason[index]; exists {
+			newDisabledReason[newIndex] = reason
+		}
+		if disabledTime, exists := channel.ChannelInfo.MultiKeyDisabledTime[index]; exists {
+			newDisabledTime[newIndex] = disabledTime
+		}
+	}
+	kept = append(kept, appended...)
+
+	channel.Key = strings.Join(kept, "\n")
+	channel.ChannelInfo.MultiKeySize = len(kept)
+	channel.ChannelInfo.MultiKeyStatusList = newStatusList
+	channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
+	channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+	return len(keys) + len(appended) - len(kept), len(kept)
+}
+
+// AppendOrEnableChannelKey appends a key to a multi-key host channel, or re-enables the key when
+// the channel already carries it in a disabled state. It returns ErrChannelKeyAlreadyEnabled when
+// the key is already present and enabled, leaving the channel untouched.
+func AppendOrEnableChannelKey(channelId int, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("channel key is empty")
+	}
+
+	lock := GetChannelPollingLock(channelId)
+	lock.Lock()
+	defer lock.Unlock()
+
+	channel, err := GetChannelById(channelId, true)
+	if err != nil {
+		return err
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		return ErrChannelNotMultiKey
+	}
+
+	keyIndex := slices.IndexFunc(channel.GetKeys(), func(existing string) bool {
+		return strings.TrimSpace(existing) == key
+	})
+	if keyIndex >= 0 {
+		if channel.GetMultiKeyStatus(keyIndex) == common.ChannelStatusEnabled {
+			return ErrChannelKeyAlreadyEnabled
+		}
+		// Re-enabling clears the bookkeeping instead of appending the key a second time.
+		delete(channel.ChannelInfo.MultiKeyStatusList, keyIndex)
+		delete(channel.ChannelInfo.MultiKeyDisabledReason, keyIndex)
+		delete(channel.ChannelInfo.MultiKeyDisabledTime, keyIndex)
+	} else {
+		RebuildChannelMultiKey(channel, func(int, int) bool { return true }, key)
+	}
+	restoreMultiKeyChannelIfAvailable(channel)
+	if err := channel.Update(); err != nil {
+		return err
+	}
+	InitChannelCache()
+	return nil
+}
+
+// restoreMultiKeyChannelIfAvailable clears the all-keys-disabled state once the channel has an
+// enabled key again, mirroring the admin enable_key flow.
+func restoreMultiKeyChannelIfAvailable(channel *Channel) {
+	if channel.Status == common.ChannelStatusEnabled ||
+		!hasEnabledMultiKey(channel.GetKeys(), channel.ChannelInfo.MultiKeyStatusList) {
+		return
+	}
+	info := channel.GetOtherInfo()
+	if info["status_reason"] != ChannelStatusReasonAllKeysDisabled {
+		return
+	}
+	channel.Status = common.ChannelStatusEnabled
+	info["status_reason"] = ""
+	info["status_time"] = common.GetTimestamp()
+	channel.SetOtherInfo(info)
 }
 
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
