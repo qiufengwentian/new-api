@@ -556,6 +556,11 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'subscription.plan_create': 'Created a subscription plan',
   'subscription.plan_update': 'Updated a subscription plan',
   'subscription.bind': 'Bound a subscription',
+  // Contributable upstream key catalog
+  'contribution.catalog_create': 'Created a contributable upstream entry',
+  'contribution.catalog_update': 'Updated a contributable upstream entry',
+  'contribution.catalog_delete': 'Deleted a contributable upstream entry',
+  'contribution.global_update': 'Updated the contributed upstream key switch',
   // Logs
   'log.clear': 'Cleared historical logs',
   'log.cleanup_start': 'Log cleanup task started.',

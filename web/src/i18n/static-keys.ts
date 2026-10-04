@@ -896,4 +896,11 @@ export const STATIC_I18N_KEYS = [
   'Verification method',
   'Admin permissions updated',
   'Provider ID',
+  // Contributable upstream catalog rejections, held in CONTRIBUTION_REJECTION_MESSAGES.
+  'Invalid contribution entry',
+  'Contribution entry not found',
+  'Host channel not found',
+  'Host channel must be a multi-key channel',
+  'Subscription plan not found',
+  'Another enabled entry already uses this channel type',
 ] as const
