@@ -903,4 +903,17 @@ export const STATIC_I18N_KEYS = [
   'Host channel must be a multi-key channel',
   'Subscription plan not found',
   'Another enabled entry already uses this channel type',
+  // User-side submission rejections, held in CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
+  // and built at runtime by contributionSubmitRejectionText.
+  'You must accept the statement before submitting',
+  'Contributing upstream keys is currently closed.',
+  'This upstream is not open for contribution.',
+  'This upstream key failed validation. Check the key and that it still has quota.',
+  'This upstream key has already been contributed.',
+  'This upstream key is already in the shared pool.',
+  'The upstream key could not be added to the shared pool. Please contact your administrator.',
+  'Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.',
+  // Submission toasts raised from use-submit-contribution.
+  'Upstream key submitted successfully',
+  'Failed to submit the upstream key',
 ] as const

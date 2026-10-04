@@ -18,15 +18,28 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import type { ContributionCatalogResponse } from './types'
+import type {
+  ContributionCatalogResponse,
+  ContributionSubmitResponse,
+  ContributionSubmitValues,
+} from './types'
 
 /**
  * Reads the contributable upstreams open to the signed-in user together with
  * the consent statement the backend owns.
- *
- * Ticket 04 adds the submission call here; this ticket only reads the catalog.
  */
 export async function getContributionCatalog(): Promise<ContributionCatalogResponse> {
   const res = await api.get('/api/contribution/catalog')
+  return res.data
+}
+
+/**
+ * Submits one upstream key. The backend re-validates the consent flag, so the
+ * form's checkbox is only the user-facing gate.
+ */
+export async function submitContribution(
+  values: ContributionSubmitValues
+): Promise<ContributionSubmitResponse> {
+  const res = await api.post('/api/contribution/submit', values)
   return res.data
 }

@@ -40,6 +40,44 @@ export interface ContributionCatalogResponse {
   data?: ContributionCatalog
 }
 
+/** The subscription instance a contribution produced; null until it is granted. */
+export interface ContributionReward {
+  channel_type: number
+  subscription_id: number
+  plan_title: string
+  amount_total: number
+  amount_used: number
+  end_time: number
+}
+
+/** One contribution record as the submit response returns it. */
+export interface ContributionSummary {
+  id: number
+  channel_type: number
+  channel_type_name: string
+  status: string
+  reason: string
+  reason_time: number
+  key_mask: string
+  subscription_id: number
+  reward_granted: boolean
+  created_time: number
+}
+
+export interface ContributionSubmitData {
+  contribution: ContributionSummary
+  reward: ContributionReward | null
+  redundant: boolean
+}
+
+export interface ContributionSubmitResponse {
+  success: boolean
+  message?: string
+  code?: string
+  retry_after_seconds?: number
+  data?: ContributionSubmitData
+}
+
 export function getContributionSubmitSchema(t: TFunction) {
   return z.object({
     channel_type: z.number().int().positive(),
