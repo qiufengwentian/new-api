@@ -51,6 +51,7 @@ func newContributionCatalogTestRouter() *gin.Engine {
 	userRoute := api.Group("/contribution", middleware.UserAuth())
 	userRoute.GET("/catalog", GetContributionCatalog)
 	userRoute.POST("/submit", SubmitContribution)
+	userRoute.POST("/revoke", RevokeContribution)
 	adminRoute := api.Group("/contribution/admin", middleware.RootAuth())
 	adminRoute.GET("/catalog", GetContributionCatalogAdmin)
 	adminRoute.POST("/catalog", CreateContributionCatalogEntry)
@@ -761,6 +762,233 @@ func TestContributionSubmitCoolsDownAfterRepeatedValidationFailures(t *testing.T
 
 	cooled, _ := upstream.calls()
 	assert.EqualValues(t, balanceRequests, cooled, "the cooldown short-circuits before any upstream call")
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/contribution/revoke
+// ---------------------------------------------------------------------------
+
+// seedContributionRevokeUser creates an ordinary signed-in user with a personal
+// access token, so a case can act as that user through UserAuth.
+func seedContributionRevokeUser(t *testing.T, db *gorm.DB, username string) (int, string) {
+	t.Helper()
+	pat := "contribution-revoke-token-" + username
+	user := model.User{
+		Username:    username,
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AccessToken: &pat,
+		AuthVersion: 1,
+		AffCode:     username,
+	}
+	require.NoError(t, db.Create(&user).Error)
+	return user.Id, pat
+}
+
+// contributionRevokeFixture is one live contribution: the owner's key is pooled in
+// the host channel and a reward subscription was granted for it.
+type contributionRevokeFixture struct {
+	ownerId        int
+	ownerToken     string
+	strangerToken  string
+	hostChannelId  int
+	contributionId int
+	subscriptionId int
+	fingerprint    string
+	key            string
+}
+
+func seedContributionRevokeFixture(t *testing.T, db *gorm.DB, prefix string) *contributionRevokeFixture {
+	t.Helper()
+	ownerId, ownerToken := seedContributionRevokeUser(t, db, prefix+"-owner")
+	_, strangerToken := seedContributionRevokeUser(t, db, prefix+"-stranger")
+	seedContributionPlan(t, db, 1)
+	seedContributionHostChannel(t, db, 1, true, "sk-host-pooled")
+
+	fixture := &contributionRevokeFixture{
+		ownerId:       ownerId,
+		ownerToken:    ownerToken,
+		strangerToken: strangerToken,
+		hostChannelId: 1,
+		key:           "sk-" + prefix + "-pooled",
+	}
+	require.NoError(t, model.AppendOrEnableChannelKey(fixture.hostChannelId, fixture.key))
+
+	channel, err := model.GetChannelById(fixture.hostChannelId, true)
+	require.NoError(t, err)
+	fixture.fingerprint = model.ContributionKeyFingerprint(channel.GetBaseURL(), fixture.key)
+
+	contribution := &model.Contribution{
+		UserId:         ownerId,
+		ChannelType:    1,
+		HostChannelId:  fixture.hostChannelId,
+		KeyFingerprint: common.GetPointer(fixture.fingerprint),
+		KeyMask:        model.MaskContributionKey(fixture.key),
+		Status:         model.ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+	fixture.contributionId = contribution.Id
+
+	subscription, err := model.GrantContributionReward(contribution, 1)
+	require.NoError(t, err)
+	fixture.subscriptionId = subscription.Id
+	return fixture
+}
+
+func revokeContribution(t *testing.T, handler http.Handler, token string, id int) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	body := fmt.Sprintf("{\"id\":%d}", id)
+	recorder := callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/revoke", body)
+	return recorder, decodeContributionResponse(t, recorder)
+}
+
+// Only the owner may revoke: another user's record is answered exactly like an id
+// that does not exist, so the endpoint cannot be used to discover that somebody else
+// contributed a key.
+func TestContributionRevokeOnlyAnswersForTheOwnersRecord(t *testing.T) {
+	db, _ := setupContributionCatalogTest(t)
+	fixture := seedContributionRevokeFixture(t, db, "ownership")
+	handler := newContributionCatalogTestRouter()
+
+	recorder, response := revokeContribution(t, handler, fixture.strangerToken, fixture.contributionId)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_not_found", response["code"])
+	assert.NotEmpty(t, response["message"])
+	assert.NotContains(t, recorder.Body.String(), fixture.key)
+
+	_, missing := revokeContribution(t, handler, fixture.ownerToken, 999999)
+	assert.Equal(t, false, missing["success"])
+	assert.Equal(t, "contribution_not_found", missing["code"], "a foreign record and a missing id must be indistinguishable")
+
+	// The rejected attempt changed nothing.
+	var stored model.Contribution
+	require.NoError(t, db.Where("id = ?", fixture.contributionId).First(&stored).Error)
+	assert.Equal(t, model.ContributionStatusActive, stored.Status)
+	require.NotNil(t, stored.KeyFingerprint)
+	assert.Equal(t, fixture.fingerprint, *stored.KeyFingerprint)
+	assert.Empty(t, stored.Reason)
+
+	subscription, err := model.GetUserSubscriptionById(fixture.subscriptionId)
+	require.NoError(t, err)
+	assert.Equal(t, "active", subscription.Status)
+
+	channel, err := model.GetChannelById(fixture.hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusEnabled, channel.GetMultiKeyStatus(1), "the key stays pooled and enabled")
+}
+
+// A dead record is terminal: the key was killed by the liveness probe, so the
+// withdrawal is refused and nothing about the record changes.
+func TestContributionRevokeRefusesADeadContribution(t *testing.T) {
+	db, _ := setupContributionCatalogTest(t)
+	fixture := seedContributionRevokeFixture(t, db, "terminal")
+	handler := newContributionCatalogTestRouter()
+
+	contribution, err := model.GetContributionById(fixture.contributionId)
+	require.NoError(t, err)
+	require.NoError(t, model.ReleaseContribution(contribution, fixture.key,
+		model.ContributionStatusDead, model.ContributionReasonUpstreamUnauthorized, false))
+
+	recorder, response := revokeContribution(t, handler, fixture.ownerToken, fixture.contributionId)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_dead_is_final", response["code"])
+	assert.NotEmpty(t, response["message"])
+	assert.NotContains(t, recorder.Body.String(), fixture.key)
+
+	var stored model.Contribution
+	require.NoError(t, db.Where("id = ?", fixture.contributionId).First(&stored).Error)
+	assert.Equal(t, model.ContributionStatusDead, stored.Status)
+	assert.Equal(t, model.ContributionReasonUpstreamUnauthorized, stored.Reason)
+	require.NotNil(t, stored.KeyFingerprint, "death keeps the fingerprint forever")
+	assert.Equal(t, fixture.fingerprint, *stored.KeyFingerprint)
+	_, err = model.GetContributionByFingerprint(fixture.fingerprint)
+	require.NoError(t, err)
+}
+
+// The happy path: the key leaves the pool, the reward is cancelled, the fingerprint
+// is freed and the withdrawal is audited - and repeating it changes nothing.
+func TestContributionRevokeDisablesTheKeyCancelsTheRewardAndAudits(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	fixture := seedContributionRevokeFixture(t, db, "withdraw")
+	handler := newContributionCatalogTestRouter()
+	entry := "{\"channel_type\":1,\"name\":\"OpenAI\",\"register_url\":\"https://upstream.example/signup\",\"key_placeholder\":\"sk-...\",\"enabled\":true,\"host_channel_id\":1,\"plan_id\":1}"
+	created := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/admin/catalog", entry))
+	require.Equal(t, true, created["success"], "body: %+v", created)
+
+	recorder, response := revokeContribution(t, handler, fixture.ownerToken, fixture.contributionId)
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	record := contributionRecordOf(t, response)
+
+	assert.Equal(t, float64(fixture.contributionId), record["id"])
+	assert.Equal(t, float64(1), record["channel_type"])
+	assert.Equal(t, "OpenAI", record["channel_type_name"])
+	assert.Equal(t, model.ContributionStatusRevoked, record["status"])
+	assert.Equal(t, model.ContributionReasonUserRevoked, record["reason"])
+	assert.NotZero(t, record["reason_time"])
+	assert.NotEmpty(t, record["key_mask"])
+	assert.NotContains(t, fmt.Sprint(record["key_mask"]), fixture.key)
+	assert.Equal(t, "cancelled", record["subscription_status"], "the summary reports the reward's refreshed state")
+	assert.NotContains(t, recorder.Body.String(), fixture.key)
+
+	// The record survives for audit with a terminal status and no fingerprint.
+	var stored model.Contribution
+	require.NoError(t, db.Where("id = ?", fixture.contributionId).First(&stored).Error)
+	assert.Equal(t, model.ContributionStatusRevoked, stored.Status)
+	assert.Equal(t, model.ContributionReasonUserRevoked, stored.Reason)
+	assert.Nil(t, stored.KeyFingerprint, "revoke frees the fingerprint")
+
+	channel, err := model.GetChannelById(fixture.hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusAutoDisabled, channel.GetMultiKeyStatus(1))
+	assert.Equal(t, model.ContributionReasonUserRevoked, channel.ChannelInfo.MultiKeyDisabledReason[1])
+
+	subscription, err := model.GetUserSubscriptionById(fixture.subscriptionId)
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", subscription.Status)
+
+	// The withdrawal is audited once, with the contribution, its channel type and its
+	// host channel - and no key material anywhere in the row.
+	requestId := recorder.Header().Get(common.RequestIdKey)
+	require.NotEmpty(t, requestId)
+	var audits []model.AuditLog
+	require.NoError(t, db.Where("request_id = ? AND category = ?", requestId, model.AuditCategoryOperation).Find(&audits).Error)
+	require.Len(t, audits, 1)
+	require.NotNil(t, audits[0].Other.Op)
+	assert.Equal(t, "contribution.revoke", audits[0].Other.Op.Action)
+	assert.True(t, audits[0].Success)
+	contributionIdParam, err := common.Marshal(audits[0].Other.Op.Params["contribution_id"])
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprint(fixture.contributionId), string(contributionIdParam))
+	hostChannelParam, err := common.Marshal(audits[0].Other.Op.Params["host_channel_id"])
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprint(fixture.hostChannelId), string(hostChannelParam))
+	encodedAudits, err := common.Marshal(audits)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encodedAudits), fixture.key, "the audit trail must not carry key material")
+
+	// Repeating the withdrawal answers with the same revoked summary and performs no
+	// transition, so it audits nothing new.
+	againRecorder, again := revokeContribution(t, handler, fixture.ownerToken, fixture.contributionId)
+	require.Equal(t, true, again["success"], "body: %+v", again)
+	againRecord := contributionRecordOf(t, again)
+	assert.Equal(t, model.ContributionStatusRevoked, againRecord["status"])
+	assert.Equal(t, model.ContributionReasonUserRevoked, againRecord["reason"])
+	assert.Equal(t, "cancelled", againRecord["subscription_status"])
+	againRequestId := againRecorder.Header().Get(common.RequestIdKey)
+	require.NotEmpty(t, againRequestId)
+	var againAudits []model.AuditLog
+	require.NoError(t, db.Where("request_id = ?", againRequestId).Find(&againAudits).Error)
+	// The generic middleware fallback still records that the endpoint was called, so
+	// what must be absent is a second contribution.revoke transition.
+	for _, audit := range againAudits {
+		if audit.Other.Op == nil {
+			continue
+		}
+		assert.NotEqual(t, "contribution.revoke", audit.Other.Op.Action, "a no-op withdrawal must not be audited as a transition")
+	}
 }
 
 // A successful validation clears the failure counter, so failures that are not

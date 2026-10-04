@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "Вышестоящий ключ успешно отправлен",
     "Users can pick this upstream while it is enabled.": "Пока запись включена, пользователи могут выбрать этот источник.",
     "While off, no upstream is offered and the user page stays empty.": "Когда выключено, источники не предлагаются, а страница пользователя остаётся пустой.",
-    "You must accept the statement before submitting": "Перед отправкой необходимо принять заявление"
+    "You must accept the statement before submitting": "Перед отправкой необходимо принять заявление",
+    "Revoke contribution": "Отозвать переданный ключ",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "Отзыв немедленно отключит этот ключ в общем канале и отменит соответствующую подписку-вознаграждение. Действие необратимо; позже вы сможете снова передать этот ключ.",
+    "Contribution revoked": "Переданный ключ отозван",
+    "Failed to revoke the contribution": "Не удалось отозвать переданный ключ",
+    "This contribution no longer exists.": "Эта передача больше не существует.",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "Эта передача завершена, потому что вышестоящий сервис отклонил ключ; её нельзя отозвать.",
+    "Dead": "Мёртвый",
+    "Revoked": "Отозван",
+    "The upstream rejected this key": "Вышестоящий сервис отклонил этот ключ",
+    "You revoked this contribution": "Вы отозвали эту передачу",
+    "Revoked a contributed upstream key": "Отозван переданный вышестоящий ключ"
   }
 }

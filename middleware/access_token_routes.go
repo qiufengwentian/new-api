@@ -146,6 +146,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: /api/contribution
 	"GET /api/contribution/catalog":          accessTokenScopeRule("wallet:read"),
 	"POST /api/contribution/submit":          accessTokenScopeRule("wallet:write"),
+	"POST /api/contribution/revoke":          accessTokenScopeRule("wallet:write"),
 	"GET /api/contribution/admin/catalog":    accessTokenScopeRule("option:read"),
 	"POST /api/contribution/admin/catalog":   accessTokenScopeRule("option:write"),
 	"PUT /api/contribution/admin/catalog":    accessTokenScopeRule("option:write"),

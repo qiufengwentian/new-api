@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import type {
   ContributionCatalogResponse,
+  ContributionRevokeResponse,
   ContributionSubmitResponse,
   ContributionSubmitValues,
 } from './types'
@@ -41,5 +42,17 @@ export async function submitContribution(
   values: ContributionSubmitValues
 ): Promise<ContributionSubmitResponse> {
   const res = await api.post('/api/contribution/submit', values)
+  return res.data
+}
+
+/**
+ * Withdraws one of the signed-in user's own contributions. The backend re-checks
+ * ownership and only a live record can be withdrawn, so the response carries the
+ * record's resulting state instead of an optimistic one.
+ */
+export async function revokeContribution(
+  id: number
+): Promise<ContributionRevokeResponse> {
+  const res = await api.post('/api/contribution/revoke', { id })
   return res.data
 }

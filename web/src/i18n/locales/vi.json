@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "Đã gửi khóa thượng nguồn thành công",
     "Users can pick this upstream while it is enabled.": "Người dùng có thể chọn nguồn này khi nó được bật.",
     "While off, no upstream is offered and the user page stays empty.": "Khi tắt, không có nguồn nào được cung cấp và trang người dùng vẫn trống.",
-    "You must accept the statement before submitting": "Bạn phải đồng ý với tuyên bố trước khi gửi"
+    "You must accept the statement before submitting": "Bạn phải đồng ý với tuyên bố trước khi gửi",
+    "Revoke contribution": "Thu hồi đóng góp",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "Thu hồi sẽ vô hiệu hóa khóa này trong kênh chia sẻ và hủy đăng ký phần thưởng tương ứng ngay lập tức. Thao tác này không thể hoàn tác; bạn có thể đóng góp lại khóa này sau.",
+    "Contribution revoked": "Đã thu hồi đóng góp",
+    "Failed to revoke the contribution": "Không thể thu hồi đóng góp",
+    "This contribution no longer exists.": "Đóng góp này không còn tồn tại.",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "Đóng góp này đã kết thúc vì thượng nguồn từ chối khóa, nên không thể thu hồi.",
+    "Dead": "Không hợp lệ",
+    "Revoked": "Đã thu hồi",
+    "The upstream rejected this key": "Thượng nguồn đã từ chối khóa này",
+    "You revoked this contribution": "Bạn đã thu hồi đóng góp này",
+    "Revoked a contributed upstream key": "Đã thu hồi khóa thượng nguồn đã đóng góp"
   }
 }

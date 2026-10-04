@@ -300,3 +300,5 @@ custom_oauth.provider_id_field_invalid: "無法從供應者響應中提取使用
 # Contribution messages
 contribution.key_dead_title: "你貢獻的上游 Key 已被停用"
 contribution.key_dead_content: "你為 {{.Upstream}} 貢獻的上游 Key 被上游判定為無效（401 Unauthorized）：它已在共享渠道中被自動停用，對應回饋訂閱已取消，且此後任何人都無法再提交它。"
+contribution.key_revoked_title: "你貢獻的上游 Key 已撤回"
+contribution.key_revoked_content: "你已撤回為 {{.Upstream}} 貢獻的上游 Key：它已在共享渠道中被自動停用，對應回饋訂閱已取消。你可以隨時重新提交這把 Key。"

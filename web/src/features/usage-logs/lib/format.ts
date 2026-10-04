@@ -560,6 +560,7 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'contribution.submit': 'Submitted a contributed upstream key',
   'contribution.grant': 'Granted the contribution reward',
   'contribution.kill': 'Disabled a contributed upstream key',
+  'contribution.revoke': 'Revoked a contributed upstream key',
   // Contributable upstream key catalog
   'contribution.catalog_create': 'Created a contributable upstream entry',
   'contribution.catalog_update': 'Updated a contributable upstream entry',

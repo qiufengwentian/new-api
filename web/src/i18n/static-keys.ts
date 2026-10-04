@@ -917,4 +917,20 @@ export const STATIC_I18N_KEYS = [
   // Submission toasts raised from use-submit-contribution.
   'Upstream key submitted successfully',
   'Failed to submit the upstream key',
+  // Withdrawal (revoke) copy: the toasts raised from use-revoke-contribution and the
+  // dialog copy of components/revoke-contribution-dialog, plus the rejections,
+  // statuses and reasons held in CONTRIBUTION_REVOKE_REJECTION_MESSAGES,
+  // CONTRIBUTION_STATUS_LABELS and CONTRIBUTION_REASON_LABELS and rendered at runtime.
+  'Revoke contribution',
+  'Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.',
+  'Contribution revoked',
+  'Failed to revoke the contribution',
+  'This contribution no longer exists.',
+  'This contribution was ended because the upstream rejected the key, so it cannot be revoked.',
+  'Dead',
+  'Revoked',
+  'The upstream rejected this key',
+  'You revoked this contribution',
+  // Rendered by renderAuditContent for the contribution.revoke audit action.
+  'Revoked a contributed upstream key',
 ] as const

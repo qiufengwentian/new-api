@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "Upstream key submitted successfully",
     "Users can pick this upstream while it is enabled.": "Users can pick this upstream while it is enabled.",
     "While off, no upstream is offered and the user page stays empty.": "While off, no upstream is offered and the user page stays empty.",
-    "You must accept the statement before submitting": "You must accept the statement before submitting"
+    "You must accept the statement before submitting": "You must accept the statement before submitting",
+    "Revoke contribution": "Revoke contribution",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.",
+    "Contribution revoked": "Contribution revoked",
+    "Failed to revoke the contribution": "Failed to revoke the contribution",
+    "This contribution no longer exists.": "This contribution no longer exists.",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "This contribution was ended because the upstream rejected the key, so it cannot be revoked.",
+    "Dead": "Dead",
+    "Revoked": "Revoked",
+    "The upstream rejected this key": "The upstream rejected this key",
+    "You revoked this contribution": "You revoked this contribution",
+    "Revoked a contributed upstream key": "Revoked a contributed upstream key"
   }
 }

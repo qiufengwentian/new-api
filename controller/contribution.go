@@ -30,10 +30,14 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/contribution_setting"
 	"github.com/samber/hot"
+	"gorm.io/gorm"
 
 	"github.com/gin-gonic/gin"
 )
@@ -58,6 +62,10 @@ const (
 	contributionCodeAlreadyPooled    = "contribution_key_already_pooled"
 	contributionCodePoolingFailed    = "contribution_pooling_failed"
 	contributionCodeRewardFailed     = "contribution_reward_failed"
+
+	// Rejection codes of the user-side withdrawal.
+	contributionCodeRevokeNotFound = "contribution_not_found"
+	contributionCodeDeadIsFinal    = "contribution_dead_is_final"
 )
 
 // The catalog lives in setting/contribution_setting, which cannot import model
@@ -534,7 +542,7 @@ func SubmitContribution(c *gin.Context) {
 		}, c)
 
 	common.ApiSuccess(c, gin.H{
-		"contribution": contributionSummary(contribution, entry.Name),
+		"contribution": contributionSummary(contribution, entry.Name, rewardSubscription),
 		"reward":       contributionRewardSummary(rewardSubscription, entry.ChannelType, plan.Title),
 		"redundant":    !rewardGranted,
 	})
@@ -561,19 +569,25 @@ func contributionRewardSummary(subscription *model.UserSubscription, channelType
 
 // contributionSummary is the user-visible shape of one contribution record. It
 // carries the mask only: the plaintext key and the fingerprint never leave the
-// database.
-func contributionSummary(contribution *model.Contribution, channelTypeName string) gin.H {
+// database. subscription is the reward instance the record points at, or nil when it
+// granted none or the instance is gone, and it contributes only its status.
+func contributionSummary(contribution *model.Contribution, channelTypeName string, subscription *model.UserSubscription) gin.H {
+	subscriptionStatus := ""
+	if subscription != nil {
+		subscriptionStatus = subscription.Status
+	}
 	return gin.H{
-		"id":                contribution.Id,
-		"channel_type":      contribution.ChannelType,
-		"channel_type_name": channelTypeName,
-		"status":            contribution.Status,
-		"reason":            contribution.Reason,
-		"reason_time":       contribution.ReasonTime,
-		"key_mask":          contribution.KeyMask,
-		"subscription_id":   contribution.SubscriptionId,
-		"reward_granted":    contribution.RewardGranted,
-		"created_time":      contribution.CreatedTime,
+		"id":                  contribution.Id,
+		"channel_type":        contribution.ChannelType,
+		"channel_type_name":   channelTypeName,
+		"status":              contribution.Status,
+		"reason":              contribution.Reason,
+		"reason_time":         contribution.ReasonTime,
+		"key_mask":            contribution.KeyMask,
+		"subscription_id":     contribution.SubscriptionId,
+		"subscription_status": subscriptionStatus,
+		"reward_granted":      contribution.RewardGranted,
+		"created_time":        contribution.CreatedTime,
 	}
 }
 
@@ -607,4 +621,157 @@ func validateContributionKey(c *gin.Context, hostChannel *model.Channel, key str
 		return false
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/contribution/revoke
+// ---------------------------------------------------------------------------
+
+// contributionRevokeRequest is the body of POST /api/contribution/revoke.
+type contributionRevokeRequest struct {
+	Id int `json:"id"`
+}
+
+// RevokeContribution withdraws one of the signed-in user's own contributions: the
+// key is auto-disabled in its host channel, the reward subscription is cancelled and
+// the key fingerprint is released, so the same key can be contributed again later.
+// Nothing is deleted - the record stays for audit.
+//
+// Ownership is enforced as part of the lookup: a record that belongs to somebody else
+// is answered exactly like an id that does not exist, so the endpoint cannot be used
+// to discover that another user contributed a key.
+//
+// Only a live record can be withdrawn, with one deliberate exception. A dead record
+// is refused, because the upstream killed that key and reporting a successful
+// withdrawal would misrepresent its state. A record the user has already withdrawn is
+// already in the state this request asks for, so the endpoint answers with the same
+// revoked summary instead of an error: a double click or a retry after a timeout must
+// not turn a successful withdrawal into a failure. Neither case performs a
+// transition, so neither is audited or announced again.
+func RevokeContribution(c *gin.Context) {
+	request := contributionRevokeRequest{}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		contributionReject(c, contributionCodeInvalidEntry, "invalid request body: "+err.Error())
+		return
+	}
+	userId := c.GetInt("id")
+
+	contribution, err := model.GetContributionById(request.Id)
+	if err != nil || contribution.UserId != userId {
+		// A lookup failure and a foreign record are answered identically so the
+		// endpoint never reveals whether somebody else's contribution exists, but an
+		// unexpected read failure still leaves a trace for the operator.
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.SysError(fmt.Sprintf("failed to read contribution %d for user %d: %v", request.Id, userId, err))
+		}
+		contributionReject(c, contributionCodeRevokeNotFound, "the contribution does not exist")
+		return
+	}
+	if contribution.Status == model.ContributionStatusRevoked {
+		respondWithRevokedContribution(c, contribution.Id)
+		return
+	}
+	if contribution.Status != model.ContributionStatusActive {
+		contributionReject(c, contributionCodeDeadIsFinal, "this contribution is already over and cannot be revoked")
+		return
+	}
+
+	// The plaintext key is resolved through the same helper the liveness probe uses.
+	// An empty result means an administrator already reclaimed the key, and the release
+	// then skips the already moot key-disabling step instead of failing.
+	plainKey := ""
+	if hostChannel, hostErr := model.GetChannelById(contribution.HostChannelId, true); hostErr != nil {
+		common.SysLog(fmt.Sprintf("contribution %d: its host channel %d is unreadable, revoking without a plaintext key: %v",
+			contribution.Id, contribution.HostChannelId, hostErr))
+	} else if resolved, found := model.ResolveContributedKey(contribution, hostChannel); found {
+		plainKey = resolved
+	}
+
+	if err := model.ReleaseContribution(contribution, plainKey, model.ContributionStatusRevoked, model.ContributionReasonUserRevoked, true); err != nil {
+		common.SysError(fmt.Sprintf("failed to revoke contribution %d: %v", contribution.Id, err))
+		common.ApiError(c, errors.New("the contribution could not be revoked"))
+		return
+	}
+	// ReleaseContribution is idempotent and leaves the struct untouched when it
+	// performed no transition, so a withdrawal racing the liveness probe is never
+	// audited or announced as this request's doing.
+	if contribution.Status == model.ContributionStatusRevoked {
+		recordContributionRevokeAudit(c, contribution)
+		notifyContributionRevoked(contribution)
+	}
+	respondWithRevokedContribution(c, contribution.Id)
+}
+
+// respondWithRevokedContribution answers with the record's refreshed summary, so the
+// client renders what the database holds rather than what this request assumed, and
+// so a repeated withdrawal gets the same answer as the first one.
+func respondWithRevokedContribution(c *gin.Context, contributionId int) {
+	contribution, err := model.GetContributionById(contributionId)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to read contribution %d back after its revoke: %v", contributionId, err))
+		common.ApiError(c, errors.New("the contribution could not be read back"))
+		return
+	}
+	channelTypeName := ""
+	if entry, found := contribution_setting.EntryByChannelType(contribution.ChannelType); found {
+		channelTypeName = entry.Name
+	}
+	var subscription *model.UserSubscription
+	if contribution.SubscriptionId > 0 {
+		subscription, err = model.GetUserSubscriptionById(contribution.SubscriptionId)
+		if err != nil {
+			// An administrator may have deleted the instance outright; the summary then
+			// reports no subscription status instead of failing the response.
+			common.SysLog(fmt.Sprintf("failed to read subscription %d of contribution %d: %v",
+				contribution.SubscriptionId, contribution.Id, err))
+			subscription = nil
+		}
+	}
+	common.ApiSuccess(c, gin.H{"contribution": contributionSummary(contribution, channelTypeName, subscription)})
+}
+
+// recordContributionRevokeAudit writes the audit row of one withdrawal. The
+// contribution, its channel type and its host channel identify it for an
+// administrator; the key appears nowhere, so the audit trail is not a place to
+// recover a credential.
+func recordContributionRevokeAudit(c *gin.Context, contribution *model.Contribution) {
+	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
+		fmt.Sprintf("Revoked the contributed upstream key of channel type %d", contribution.ChannelType),
+		auditOperatorInfo(c), &model.AuditOperation{
+			Action: "contribution.revoke",
+			Params: model.AuditFields{
+				"contribution_id": contribution.Id,
+				"channel_type":    contribution.ChannelType,
+				"host_channel_id": contribution.HostChannelId,
+			},
+		}, c)
+}
+
+// notifyContributionRevoked tells the contributor their withdrawal went through,
+// through the existing per-user notification channel (email, webhook, Bark or
+// Gotify) - the repo has no per-user in-site inbox to fall back on.
+//
+// The notice is best-effort: the key is already out of the pool and the reward
+// already cancelled, so a refused notification - the limit gate, an unreachable
+// webhook - is logged and never fails the withdrawal.
+func notifyContributionRevoked(contribution *model.Contribution) {
+	contributor, err := model.GetUserById(contribution.UserId, false)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to load contributor %d to notify about the revoked contribution %d: %v",
+			contribution.UserId, contribution.Id, err))
+		return
+	}
+	setting := contributor.GetSetting()
+	upstream := fmt.Sprintf("channel type %d", contribution.ChannelType)
+	if entry, found := contribution_setting.EntryByChannelType(contribution.ChannelType); found && entry.Name != "" {
+		upstream = entry.Name
+	}
+	notice := dto.NewNotify(dto.NotifyTypeChannelUpdate,
+		i18n.Translate(setting.Language, i18n.MsgContributionKeyRevokedTitle),
+		i18n.Translate(setting.Language, i18n.MsgContributionKeyRevokedContent, map[string]any{"Upstream": upstream}),
+		nil)
+	if err := service.NotifyUser(contributor.Id, contributor.Email, setting, notice); err != nil {
+		common.SysLog(fmt.Sprintf("failed to notify contributor %d about the revoked contribution %d: %v",
+			contributor.Id, contribution.Id, err))
+	}
 }
