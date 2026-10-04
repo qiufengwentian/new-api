@@ -47,6 +47,8 @@ export function useSubmitContribution() {
         void queryClient.invalidateQueries({
           queryKey: ['contribution-catalog'],
         })
+        // The list shows the new record and the refreshed account summary.
+        void queryClient.invalidateQueries({ queryKey: ['contribution-mine'] })
         toast.success(i18next.t('Upstream key submitted successfully'))
         return
       }

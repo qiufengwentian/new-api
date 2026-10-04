@@ -18,29 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
-import { StatusBadge, type StatusVariant } from '@/components/status-badge'
+import { StatusBadge } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatNumber, formatTimestamp } from '@/lib/format'
 
+import { contributionSubscriptionStatusBadge } from '../constants'
 import type { ContributionSubmitData } from '../types'
 
 type ContributionResultProps = {
   result: ContributionSubmitData
-}
-
-// The reward is a plain subscription instance, so it borrows the subscription
-// vocabulary the wallet already renders instead of inventing a second one.
-const REWARD_STATUS_BADGES: Record<
-  string,
-  { labelKey: string; variant: StatusVariant }
-> = {
-  active: { labelKey: 'Active', variant: 'success' },
-  cancelled: { labelKey: 'Invalidated', variant: 'neutral' },
-}
-const REWARD_STATUS_FALLBACK: { labelKey: string; variant: StatusVariant } = {
-  labelKey: 'Expired',
-  variant: 'neutral',
 }
 
 /**
@@ -54,9 +41,7 @@ export function ContributionResult(props: ContributionResultProps) {
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const contribution = props.result.contribution
   const reward = props.result.reward
-  const rewardStatus = reward
-    ? (REWARD_STATUS_BADGES[reward.status] ?? REWARD_STATUS_FALLBACK)
-    : REWARD_STATUS_FALLBACK
+  const rewardStatus = contributionSubscriptionStatusBadge(reward?.status ?? '')
 
   return (
     <Alert>

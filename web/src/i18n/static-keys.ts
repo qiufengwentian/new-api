@@ -931,6 +931,11 @@ export const STATIC_I18N_KEYS = [
   'Revoked',
   'The upstream rejected this key',
   'You revoked this contribution',
+  // Reward subscription badges held in CONTRIBUTION_SUBSCRIPTION_STATUS_BADGES and
+  // rendered at runtime by contributionSubscriptionStatusBadge.
+  'Active',
+  'Invalidated',
+  'Expired',
   // Rendered by renderAuditContent for the contribution.revoke audit action.
   'Revoked a contributed upstream key',
 ] as const

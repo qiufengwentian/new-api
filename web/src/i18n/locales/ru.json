@@ -6950,6 +6950,12 @@
     "Revoked": "Отозван",
     "The upstream rejected this key": "Вышестоящий сервис отклонил этот ключ",
     "You revoked this contribution": "Вы отозвали эту передачу",
-    "Revoked a contributed upstream key": "Отозван переданный вышестоящий ключ"
+    "Revoked a contributed upstream key": "Отозван переданный вышестоящий ключ",
+    "My contributions": "Мои переданные ключи",
+    "You have brought in {{types}} upstream channel types.": "Вы привлекли {{types}} типов каналов-источников.",
+    "No contributions yet": "Пока нет переданных ключей",
+    "Contribute an upstream key and it will show up here.": "Передайте ключ источника, и он появится здесь.",
+    "No reward": "Нет награды",
+    "Only a live contribution can be revoked.": "Отозвать можно только активную передачу."
   }
 }

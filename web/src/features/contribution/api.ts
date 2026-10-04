@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import type {
   ContributionCatalogResponse,
+  ContributionMineResponse,
   ContributionRevokeResponse,
   ContributionSubmitResponse,
   ContributionSubmitValues,
@@ -31,6 +32,15 @@ import type {
  */
 export async function getContributionCatalog(): Promise<ContributionCatalogResponse> {
   const res = await api.get('/api/contribution/catalog')
+  return res.data
+}
+
+/**
+ * Reads the signed-in user's own contributions, newest first, with the account's
+ * contribution summary. Only the stored key mask is returned, never the key.
+ */
+export async function getMyContributions(): Promise<ContributionMineResponse> {
+  const res = await api.get('/api/contribution/mine')
   return res.data
 }
 

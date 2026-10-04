@@ -52,7 +52,17 @@ export interface ContributionReward {
   status: string
 }
 
-/** One contribution record as the submit response returns it. */
+/** The reward instance a contribution points at; null when it granted none. */
+export interface ContributionSubscription {
+  plan_title: string
+  amount_total: number
+  amount_used: number
+  end_time: number
+  /** Subscription status: active / cancelled / expired. */
+  status: string
+}
+
+/** One contribution record, as every contribution response returns it. */
 export interface ContributionSummary {
   id: number
   channel_type: number
@@ -64,8 +74,27 @@ export interface ContributionSummary {
   subscription_id: number
   /** The reward instance's status, or an empty string when the record granted none. */
   subscription_status: string
+  /** The reward instance itself, or null when the record granted none or it is gone. */
+  subscription: ContributionSubscription | null
   reward_granted: boolean
   created_time: number
+}
+
+/** The account's contribution tally: channel types that still reward it. */
+export interface ContributionAccountSummary {
+  channel_type_count: number
+}
+
+/** The signed-in user's own contributions plus the account summary. */
+export interface ContributionMineData {
+  items: ContributionSummary[]
+  summary: ContributionAccountSummary
+}
+
+export interface ContributionMineResponse {
+  success: boolean
+  message?: string
+  data?: ContributionMineData
 }
 
 export interface ContributionSubmitData {

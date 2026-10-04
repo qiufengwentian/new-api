@@ -26,6 +26,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getContributionCatalog } from './api'
 import { ContributePanel } from './components/contribute-panel'
+import { MyContributions } from './components/my-contributions'
 
 export function Contribution() {
   const { t } = useTranslation()
@@ -60,6 +61,8 @@ export function Contribution() {
           {catalogQuery.data ? (
             <ContributePanel catalog={catalogQuery.data} />
           ) : null}
+
+          <MyContributions />
         </div>
       </div>
     </Main>

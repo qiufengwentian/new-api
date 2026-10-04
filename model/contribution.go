@@ -247,6 +247,28 @@ func HasActiveContributionForType(userId, channelType, excludeId int) (bool, err
 	return count > 0, nil
 }
 
+// CountActiveContributionChannelTypes counts the distinct channel types a user
+// currently holds a live contribution for: "how many upstreams this account has
+// already brought in".
+//
+// It counts distinct channel types rather than records because one upstream counts
+// once: several live keys of the same type are one reward and therefore one
+// upstream. Dead and revoked contributions are excluded, so the number falls back
+// when a contribution ends.
+func CountActiveContributionChannelTypes(userId int) (int, error) {
+	if userId <= 0 {
+		return 0, errors.New("invalid user id")
+	}
+	var count int64
+	if err := DB.Model(&Contribution{}).
+		Where("user_id = ? AND status = ?", userId, ContributionStatusActive).
+		Distinct("channel_type").
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
 // GrantContributionReward issues the accepted contribution's reward: one
 // subscription instance built from the catalog entry's plan, tagged with the
 // "contribution" source and the plan's own quota/reset rules.

@@ -6950,6 +6950,12 @@
     "Revoked": "已撤回",
     "The upstream rejected this key": "上游拒絕了這把 Key",
     "You revoked this contribution": "你撤回了這條貢獻",
-    "Revoked a contributed upstream key": "撤回了一把貢獻的上游 Key"
+    "Revoked a contributed upstream key": "撤回了一把貢獻的上游 Key",
+    "My contributions": "我的貢獻",
+    "You have brought in {{types}} upstream channel types.": "你已湊到 {{types}} 個渠道類型",
+    "No contributions yet": "暫無貢獻",
+    "Contribute an upstream key and it will show up here.": "貢獻一把上游 Key 後就會顯示在這裡。",
+    "No reward": "無回饋",
+    "Only a live contribution can be revoked.": "只有生效中的貢獻可以撤回。"
   }
 }
