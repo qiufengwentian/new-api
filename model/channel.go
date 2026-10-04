@@ -744,6 +744,9 @@ var ErrChannelKeyAlreadyEnabled = errors.New("channel key already enabled")
 // multi-key mode.
 var ErrChannelNotMultiKey = errors.New("channel is not in multi-key mode")
 
+// ErrChannelKeyNotFound reports that a per-key status update named a key the channel does not hold.
+var ErrChannelKeyNotFound = errors.New("channel key not found")
+
 // GetMultiKeyStatus returns the effective status of the key at index; a missing entry means enabled.
 func (channel *Channel) GetMultiKeyStatus(index int) int {
 	if status, exists := channel.ChannelInfo.MultiKeyStatusList[index]; exists {
@@ -852,6 +855,43 @@ func restoreMultiKeyChannelIfAvailable(channel *Channel) {
 }
 
 func UpdateChannelStatus(channelId int, usingKey string, status int, reason string) bool {
+	return updateChannelStatus(channelId, usingKey, status, reason, false)
+}
+
+// SetChannelKeyStatus applies status to the single key that matches key in a multi-key channel.
+//
+// UpdateChannelStatus short-circuits when the channel already carries the target status, which
+// drops the per-key write: a key stored as enabled on a channel that is already auto-disabled
+// would stay enabled in the database and become selectable again the moment the channel is
+// enabled. Callers that judge one contributed key dead or revoked must persist that write, so
+// this path bypasses only the channel-level same-status short circuit.
+func SetChannelKeyStatus(channelId int, key string, status int, reason string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("channel key is empty")
+	}
+	channel, err := GetChannelById(channelId, true)
+	if err != nil {
+		return err
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		return ErrChannelNotMultiKey
+	}
+	if !slices.ContainsFunc(channel.GetKeys(), func(existing string) bool {
+		return strings.TrimSpace(existing) == key
+	}) {
+		return ErrChannelKeyNotFound
+	}
+	if !updateChannelStatus(channelId, key, status, reason, true) {
+		return errors.New("failed to update channel key status")
+	}
+	return nil
+}
+
+// updateChannelStatus is the single channel status writer behind UpdateChannelStatus and
+// SetChannelKeyStatus. forcePerKey skips the channel-level same-status short circuit so the
+// status of a targeted key is persisted even when the channel already carries that status.
+func updateChannelStatus(channelId int, usingKey string, status int, reason string, forcePerKey bool) bool {
 	if common.MemoryCacheEnabled {
 		channelStatusLock.Lock()
 		defer channelStatusLock.Unlock()
@@ -905,7 +945,7 @@ func UpdateChannelStatus(channelId int, usingKey string, status int, reason stri
 		overridesKeyExhaustion := channel.ChannelInfo.IsMultiKey && usingKey == "" &&
 			status == common.ChannelStatusManuallyDisabled && reason != ChannelStatusReasonAllKeysDisabled &&
 			channel.GetOtherInfo()["status_reason"] == ChannelStatusReasonAllKeysDisabled
-		if channel.Status == status && !overridesKeyExhaustion {
+		if channel.Status == status && !overridesKeyExhaustion && !(forcePerKey && usingKey != "") {
 			return false
 		}
 

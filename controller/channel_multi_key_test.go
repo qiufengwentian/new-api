@@ -426,3 +426,53 @@ func TestMultiKeyAppendOrEnableChannelKeyRejectsIneligibleChannel(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "key-one", loaded.Key)
 }
+
+// TestMultiKeySetChannelKeyStatusForcesPerKeyWrite pins the difference between the channel-level
+// status writer and the per-key writer. When the channel already carries the target status,
+// UpdateChannelStatus short-circuits and drops the per-key write, so a key that was judged dead
+// would come back to life the next time the channel is enabled. SetChannelKeyStatus must persist it.
+func TestMultiKeySetChannelKeyStatusForcesPerKeyWrite(t *testing.T) {
+	setupMultiKeyTestChannelDB(t)
+
+	channel := newMultiKeyTestChannel(t, "key-one\nkey-two", model.ChannelInfo{
+		IsMultiKey:             true,
+		MultiKeySize:           2,
+		MultiKeyStatusList:     map[int]int{1: common.ChannelStatusAutoDisabled},
+		MultiKeyDisabledReason: map[int]string{1: "upstream 401"},
+		MultiKeyDisabledTime:   map[int]int64{1: 111},
+	})
+	channel.Status = common.ChannelStatusAutoDisabled
+	info := channel.GetOtherInfo()
+	info["status_reason"] = model.ChannelStatusReasonAllKeysDisabled
+	channel.SetOtherInfo(info)
+	require.NoError(t, channel.Update())
+
+	assert.False(t, model.UpdateChannelStatus(channel.Id, "key-one", common.ChannelStatusAutoDisabled, "upstream 401"))
+	loaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.NotContains(t, loaded.ChannelInfo.MultiKeyStatusList, 0)
+
+	require.NoError(t, model.SetChannelKeyStatus(channel.Id, "key-one", common.ChannelStatusAutoDisabled, "upstream 401"))
+
+	loaded, err = model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, map[int]int{0: common.ChannelStatusAutoDisabled, 1: common.ChannelStatusAutoDisabled}, loaded.ChannelInfo.MultiKeyStatusList)
+	assert.Equal(t, "upstream 401", loaded.ChannelInfo.MultiKeyDisabledReason[0])
+	assert.NotZero(t, loaded.ChannelInfo.MultiKeyDisabledTime[0])
+	assert.Equal(t, "upstream 401", loaded.ChannelInfo.MultiKeyDisabledReason[1])
+	assert.Equal(t, int64(111), loaded.ChannelInfo.MultiKeyDisabledTime[1])
+
+	_, _, keyErr := loaded.GetNextEnabledKey()
+	require.NotNil(t, keyErr)
+}
+
+func TestMultiKeySetChannelKeyStatusRejectsUnknownKey(t *testing.T) {
+	setupMultiKeyTestChannelDB(t)
+
+	channel := newMultiKeyTestChannel(t, "key-one", model.ChannelInfo{IsMultiKey: true, MultiKeySize: 1})
+	require.ErrorIs(t, model.SetChannelKeyStatus(channel.Id, "key-missing", common.ChannelStatusAutoDisabled, "upstream 401"), model.ErrChannelKeyNotFound)
+	require.Error(t, model.SetChannelKeyStatus(channel.Id+9999, "key-one", common.ChannelStatusAutoDisabled, "upstream 401"))
+
+	nonMultiKey := newMultiKeyTestChannel(t, "key-one", model.ChannelInfo{})
+	require.ErrorIs(t, model.SetChannelKeyStatus(nonMultiKey.Id, "key-one", common.ChannelStatusAutoDisabled, "upstream 401"), model.ErrChannelNotMultiKey)
+}
