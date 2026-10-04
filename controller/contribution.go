@@ -229,7 +229,8 @@ func UpdateContributionGlobalEnabled(c *gin.Context) {
 }
 
 // GetContributionCatalog returns the contributable entries a signed-in user may
-// pick from, plus the consent statement the backend version-controls.
+// pick from, the consent statement the backend version-controls, and the account's
+// contribution summary.
 func GetContributionCatalog(c *gin.Context) {
 	entries := contribution_setting.EnabledEntries()
 	public := make([]gin.H, 0, len(entries))
@@ -245,7 +246,80 @@ func GetContributionCatalog(c *gin.Context) {
 		"enabled":   contribution_setting.GlobalEnabled(),
 		"entries":   public,
 		"agreement": contribution_setting.AgreementText,
+		"summary":   contributionAccountSummary(c.GetInt("id")),
 	})
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/contribution/mine
+// ---------------------------------------------------------------------------
+
+// GetMyContributions lists the signed-in user's own contributions, newest first,
+// together with the account's contribution summary. Each record is reported with
+// its display mask only: the plaintext key and the key fingerprint never leave the
+// database.
+func GetMyContributions(c *gin.Context) {
+	userId := c.GetInt("id")
+	contributions, err := model.GetContributionsByUser(userId)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to read the contributions of user %d: %v", userId, err))
+		common.ApiError(c, errors.New("the contributions could not be read"))
+		return
+	}
+
+	// A record points at the reward instance it produced; caching the lookup keeps a
+	// long list from re-reading the same subscription.
+	subscriptions := make(map[int]*model.UserSubscription, len(contributions))
+	items := make([]gin.H, 0, len(contributions))
+	for i := range contributions {
+		contribution := &contributions[i]
+		var subscription *model.UserSubscription
+		if contribution.SubscriptionId > 0 {
+			cached, seen := subscriptions[contribution.SubscriptionId]
+			if !seen {
+				cached, err = model.GetUserSubscriptionById(contribution.SubscriptionId)
+				if err != nil {
+					// An administrator may have deleted the instance outright; the
+					// record then reports no reward instead of failing the list.
+					common.SysLog(fmt.Sprintf("failed to read subscription %d of contribution %d: %v",
+						contribution.SubscriptionId, contribution.Id, err))
+					cached = nil
+				}
+				subscriptions[contribution.SubscriptionId] = cached
+			}
+			subscription = cached
+		}
+		items = append(items, contributionSummary(contribution, subscription))
+	}
+
+	common.ApiSuccess(c, gin.H{
+		"items":   items,
+		"summary": contributionAccountSummary(userId),
+	})
+}
+
+// contributionAccountSummary is the account's contribution tally: how many distinct
+// channel types still reward it, rendered as "upstreams you have already brought
+// in". A failed count is logged and reported as zero rather than blanking the
+// catalog or the list around it; the next read retries.
+func contributionAccountSummary(userId int) gin.H {
+	count, err := model.CountActiveContributionChannelTypes(userId)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to count the active contribution channel types of user %d: %v", userId, err))
+		count = 0
+	}
+	return gin.H{"channel_type_count": count}
+}
+
+// contributionChannelTypeName names a channel type the way the contributor knows
+// it: the administrator's catalog name when an entry still exists, otherwise the
+// built-in channel type name. A contribution outlives catalog edits, so the list
+// must not lose its label when an entry is deleted or renamed.
+func contributionChannelTypeName(channelType int) string {
+	if entry, found := contribution_setting.EntryByChannelType(channelType); found && strings.TrimSpace(entry.Name) != "" {
+		return entry.Name
+	}
+	return constant.GetChannelTypeName(channelType)
 }
 
 // ---------------------------------------------------------------------------
@@ -542,7 +616,7 @@ func SubmitContribution(c *gin.Context) {
 		}, c)
 
 	common.ApiSuccess(c, gin.H{
-		"contribution": contributionSummary(contribution, entry.Name, rewardSubscription),
+		"contribution": contributionSummary(contribution, rewardSubscription),
 		"reward":       contributionRewardSummary(rewardSubscription, entry.ChannelType, plan.Title),
 		"redundant":    !rewardGranted,
 	})
@@ -553,39 +627,65 @@ func SubmitContribution(c *gin.Context) {
 // of it is left, and until when. It is nil when nothing was granted, so the
 // frontend renders no reward instead of an invented one.
 func contributionRewardSummary(subscription *model.UserSubscription, channelType int, planTitle string) gin.H {
+	summary := contributionSubscriptionSummary(subscription, planTitle)
+	if summary == nil {
+		return nil
+	}
+	summary["channel_type"] = channelType
+	summary["subscription_id"] = subscription.Id
+	return summary
+}
+
+// contributionSubscriptionSummary is the nested shape of the reward instance a
+// contribution points at: which plan it came from, how much of it is left, until
+// when, and whether it is still live. It is nil when the record granted no reward
+// or the instance is gone, and it never carries the instance's id - the record
+// around it already does.
+func contributionSubscriptionSummary(subscription *model.UserSubscription, planTitle string) gin.H {
 	if subscription == nil {
 		return nil
 	}
 	return gin.H{
-		"channel_type":    channelType,
-		"subscription_id": subscription.Id,
-		"plan_title":      planTitle,
-		"amount_total":    subscription.AmountTotal,
-		"amount_used":     subscription.AmountUsed,
-		"end_time":        subscription.EndTime,
-		"status":          subscription.Status,
+		"plan_title":   planTitle,
+		"amount_total": subscription.AmountTotal,
+		"amount_used":  subscription.AmountUsed,
+		"end_time":     subscription.EndTime,
+		"status":       subscription.Status,
 	}
 }
 
-// contributionSummary is the user-visible shape of one contribution record. It
-// carries the mask only: the plaintext key and the fingerprint never leave the
-// database. subscription is the reward instance the record points at, or nil when it
-// granted none or the instance is gone, and it contributes only its status.
-func contributionSummary(contribution *model.Contribution, channelTypeName string, subscription *model.UserSubscription) gin.H {
+// contributionSummary is the one user-visible shape of a contribution record,
+// shared by the submit response, the withdrawal response and the contribution
+// list. It carries the mask only: the plaintext key and the fingerprint never
+// leave the database. The channel type is named from the live catalog, falling
+// back to the built-in channel type name, and subscription is the reward instance
+// the record points at, or nil when it granted none or the instance is gone.
+func contributionSummary(contribution *model.Contribution, subscription *model.UserSubscription) gin.H {
+	planTitle := ""
 	subscriptionStatus := ""
 	if subscription != nil {
 		subscriptionStatus = subscription.Status
+		// The submit path already holds the plan it just granted from; every other
+		// reader resolves it from the instance the record points at.
+		if subscription.PlanId > 0 {
+			if plan, err := model.GetSubscriptionPlanById(subscription.PlanId); err == nil {
+				planTitle = plan.Title
+			} else {
+				common.SysLog(fmt.Sprintf("failed to read plan %d of subscription %d: %v", subscription.PlanId, subscription.Id, err))
+			}
+		}
 	}
 	return gin.H{
 		"id":                  contribution.Id,
 		"channel_type":        contribution.ChannelType,
-		"channel_type_name":   channelTypeName,
+		"channel_type_name":   contributionChannelTypeName(contribution.ChannelType),
 		"status":              contribution.Status,
 		"reason":              contribution.Reason,
 		"reason_time":         contribution.ReasonTime,
 		"key_mask":            contribution.KeyMask,
 		"subscription_id":     contribution.SubscriptionId,
 		"subscription_status": subscriptionStatus,
+		"subscription":        contributionSubscriptionSummary(subscription, planTitle),
 		"reward_granted":      contribution.RewardGranted,
 		"created_time":        contribution.CreatedTime,
 	}
@@ -712,10 +812,6 @@ func respondWithRevokedContribution(c *gin.Context, contributionId int) {
 		common.ApiError(c, errors.New("the contribution could not be read back"))
 		return
 	}
-	channelTypeName := ""
-	if entry, found := contribution_setting.EntryByChannelType(contribution.ChannelType); found {
-		channelTypeName = entry.Name
-	}
 	var subscription *model.UserSubscription
 	if contribution.SubscriptionId > 0 {
 		subscription, err = model.GetUserSubscriptionById(contribution.SubscriptionId)
@@ -727,7 +823,7 @@ func respondWithRevokedContribution(c *gin.Context, contributionId int) {
 			subscription = nil
 		}
 	}
-	common.ApiSuccess(c, gin.H{"contribution": contributionSummary(contribution, channelTypeName, subscription)})
+	common.ApiSuccess(c, gin.H{"contribution": contributionSummary(contribution, subscription)})
 }
 
 // recordContributionRevokeAudit writes the audit row of one withdrawal. The

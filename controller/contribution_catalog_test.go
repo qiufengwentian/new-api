@@ -50,6 +50,7 @@ func newContributionCatalogTestRouter() *gin.Engine {
 	api := router.Group("/api")
 	userRoute := api.Group("/contribution", middleware.UserAuth())
 	userRoute.GET("/catalog", GetContributionCatalog)
+	userRoute.GET("/mine", GetMyContributions)
 	userRoute.POST("/submit", SubmitContribution)
 	userRoute.POST("/revoke", RevokeContribution)
 	adminRoute := api.Group("/contribution/admin", middleware.RootAuth())
@@ -1014,4 +1015,176 @@ func TestContributionSubmitSuccessClearsFailureCounter(t *testing.T) {
 		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-flaky-again-%d", attempt), true)
 		assert.Equal(t, "contribution_key_invalid", response["code"], "the counter restarted after a success")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/contribution/mine
+// ---------------------------------------------------------------------------
+
+// contributionMineItemsById indexes the list by record id and keeps the order it
+// was returned in, so a case can assert both "newest first" and per-record detail
+// without depending on position.
+func contributionMineItemsById(t *testing.T, response map[string]any) (map[int]map[string]any, []int) {
+	t.Helper()
+	raw, ok := contributionDataOf(t, response)["items"].([]any)
+	require.True(t, ok, "the list endpoint answers with items")
+	byId := make(map[int]map[string]any, len(raw))
+	order := make([]int, 0, len(raw))
+	for _, entry := range raw {
+		item, ok := entry.(map[string]any)
+		require.True(t, ok)
+		id := int(item["id"].(float64))
+		byId[id] = item
+		order = append(order, id)
+	}
+	return byId, order
+}
+
+// The list is the contributor's own bookkeeping: the caller sees only their own
+// records, every state renders truthfully with its reason and reward, and the
+// summary counts the channel types that still reward the account.
+func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *testing.T) {
+	db, _ := setupContributionCatalogTest(t)
+	handler := newContributionCatalogTestRouter()
+	ownerId, ownerToken := seedContributionRevokeUser(t, db, "mine-owner")
+	strangerId, _ := seedContributionRevokeUser(t, db, "mine-stranger")
+	seedContributionPlan(t, db, 1)
+	// Only channel type 1 has a catalog entry; the other types are named by their
+	// built-in channel type name.
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		contribution_setting.CatalogOptionKey: `[{"id":1,"channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}]`,
+	}))
+
+	const pooledKey = "sk-mine-plaintext-must-never-be-returned"
+	seedContributionHostChannel(t, db, 1, true, "sk-host-pooled\n"+pooledKey)
+
+	seed := func(userId, channelType int, status string, reason string, fingerprint string) *model.Contribution {
+		contribution := &model.Contribution{
+			UserId:        userId,
+			ChannelType:   channelType,
+			HostChannelId: 1,
+			KeyMask:       model.MaskContributionKey(pooledKey),
+			Status:        status,
+			RewardGranted: status == model.ContributionStatusActive,
+		}
+		if fingerprint != "" {
+			contribution.KeyFingerprint = common.GetPointer(fingerprint)
+		}
+		if reason != "" {
+			contribution.Reason = reason
+			contribution.ReasonTime = common.GetTimestamp()
+		}
+		require.NoError(t, contribution.Create())
+		return contribution
+	}
+
+	liveRewarded := seed(ownerId, 1, model.ContributionStatusActive, "", "fp-mine-1")
+	liveRedundant := seed(ownerId, 1, model.ContributionStatusActive, "", "fp-mine-2")
+	revoked := seed(ownerId, 1, model.ContributionStatusRevoked, model.ContributionReasonUserRevoked, "")
+	liveOtherType := seed(ownerId, 3, model.ContributionStatusActive, "", "fp-mine-3")
+	dead := seed(ownerId, 3, model.ContributionStatusDead, model.ContributionReasonUpstreamUnauthorized, "fp-mine-4")
+	foreign := seed(strangerId, 1, model.ContributionStatusActive, "", "fp-mine-foreign")
+
+	reward, err := model.GrantContributionReward(liveRewarded, 1)
+	require.NoError(t, err)
+	cancelledReward, err := model.GrantContributionReward(dead, 1)
+	require.NoError(t, err)
+	_, err = model.AdminInvalidateUserSubscription(cancelledReward.Id)
+	require.NoError(t, err)
+
+	recorder := callContributionCatalog(t, handler, ownerToken, http.MethodGet, "/api/contribution/mine", "")
+	response := decodeContributionResponse(t, recorder)
+	byId, order := contributionMineItemsById(t, response)
+
+	require.Len(t, order, 5, "only the caller's own records are listed")
+	assert.NotContains(t, order, foreign.Id)
+	assert.Equal(t, []int{dead.Id, liveOtherType.Id, revoked.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
+
+	liveItem := byId[liveRewarded.Id]
+	assert.Equal(t, float64(1), liveItem["channel_type"])
+	assert.Equal(t, "OpenAI", liveItem["channel_type_name"])
+	assert.Equal(t, model.ContributionStatusActive, liveItem["status"])
+	assert.Empty(t, liveItem["reason"])
+	assert.NotEmpty(t, liveItem["key_mask"])
+	require.NotNil(t, liveItem["subscription"], "an active rewarded contribution reports its instance")
+	rewardItem := liveItem["subscription"].(map[string]any)
+	assert.Equal(t, "Reward 1", rewardItem["plan_title"])
+	assert.Equal(t, float64(5000), rewardItem["amount_total"])
+	assert.Equal(t, float64(0), rewardItem["amount_used"])
+	assert.NotZero(t, rewardItem["end_time"])
+	assert.Equal(t, "active", rewardItem["status"])
+	assert.Equal(t, float64(reward.Id), liveItem["subscription_id"], "the summary names the instance the record points at")
+
+	assert.Nil(t, byId[liveRedundant.Id]["subscription"], "a redundant contribution granted no reward")
+
+	deadItem := byId[dead.Id]
+	assert.Equal(t, model.ContributionStatusDead, deadItem["status"])
+	assert.Equal(t, model.ContributionReasonUpstreamUnauthorized, deadItem["reason"])
+	assert.NotZero(t, deadItem["reason_time"])
+	require.NotNil(t, deadItem["subscription"], "a dead contribution still reports the reward it used to hold")
+	assert.Equal(t, "cancelled", deadItem["subscription"].(map[string]any)["status"])
+
+	revokedItem := byId[revoked.Id]
+	assert.Equal(t, model.ContributionStatusRevoked, revokedItem["status"])
+	assert.Equal(t, model.ContributionReasonUserRevoked, revokedItem["reason"])
+	assert.NotZero(t, revokedItem["reason_time"])
+	assert.Nil(t, revokedItem["subscription"])
+
+	// The catalog entry names channel type 1; channel type 3 has none and falls back
+	// to the built-in channel type name.
+	assert.Equal(t, "OpenAI", byId[liveRedundant.Id]["channel_type_name"])
+	assert.Equal(t, "Azure", byId[liveOtherType.Id]["channel_type_name"])
+	assert.Equal(t, "Azure", deadItem["channel_type_name"])
+
+	summary, ok := contributionDataOf(t, response)["summary"].(map[string]any)
+	require.True(t, ok, "the list carries the account summary")
+	assert.Equal(t, float64(2), summary["channel_type_count"], "distinct live channel types: 1 and 3")
+
+	assert.NotContains(t, recorder.Body.String(), pooledKey, "the list never echoes the plaintext key")
+	assert.NotContains(t, recorder.Body.String(), "fp-mine", "the fingerprint never leaves the database")
+}
+
+// The catalog read reports the account's contribution summary as well, without
+// losing any field the contribute panel already renders.
+func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
+	db, adminToken := setupContributionCatalogTest(t)
+	handler := newContributionCatalogTestRouter()
+	ownerId, ownerToken := seedContributionRevokeUser(t, db, "catalog-summary-owner")
+	seedContributionHostChannel(t, db, 1, true, "sk-host-pooled")
+	seedContributionPlan(t, db, 1)
+
+	entry := `{"channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}`
+	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, adminToken, http.MethodPost, "/api/contribution/admin/catalog", entry))["success"])
+	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, adminToken, http.MethodPut, "/api/contribution/admin/global", `{"enabled":true}`))["success"])
+
+	// Two live channel types plus one that already ended: only the live types count
+	// as upstreams this account brought in.
+	for index, seed := range []struct {
+		channelType int
+		status      string
+	}{
+		{channelType: 1, status: model.ContributionStatusActive},
+		{channelType: 3, status: model.ContributionStatusActive},
+		{channelType: 3, status: model.ContributionStatusDead},
+	} {
+		contribution := &model.Contribution{
+			UserId:         ownerId,
+			ChannelType:    seed.channelType,
+			HostChannelId:  1,
+			KeyFingerprint: common.GetPointer(fmt.Sprintf("fp-catalog-summary-%d", index)),
+			KeyMask:        model.MaskContributionKey("sk-catalog-summary"),
+			Status:         seed.status,
+		}
+		require.NoError(t, contribution.Create())
+	}
+
+	response := decodeContributionResponse(t, callContributionCatalog(t, handler, ownerToken, http.MethodGet, "/api/contribution/catalog", ""))
+	data := contributionDataOf(t, response)
+	assert.Equal(t, true, data["enabled"])
+	assert.NotEmpty(t, contributionEntriesOf(t, response))
+	assert.NotEmpty(t, data["agreement"])
+
+	summary, ok := data["summary"].(map[string]any)
+	require.True(t, ok, "the catalog read reports the account's contribution summary")
+	assert.Equal(t, float64(2), summary["channel_type_count"])
 }

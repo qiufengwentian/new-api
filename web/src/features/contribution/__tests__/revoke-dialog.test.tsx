@@ -38,6 +38,13 @@ const activeContribution: ContributionSummary = {
   key_mask: '************',
   subscription_id: 9,
   subscription_status: 'active',
+  subscription: {
+    plan_title: 'Pro plan',
+    amount_total: 1000,
+    amount_used: 250,
+    end_time: 1_800_000_000,
+    status: 'active',
+  },
   reward_granted: true,
   created_time: 1_700_000_000,
 }

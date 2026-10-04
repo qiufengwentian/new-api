@@ -6950,6 +6950,12 @@
     "Revoked": "Revoked",
     "The upstream rejected this key": "The upstream rejected this key",
     "You revoked this contribution": "You revoked this contribution",
-    "Revoked a contributed upstream key": "Revoked a contributed upstream key"
+    "Revoked a contributed upstream key": "Revoked a contributed upstream key",
+    "My contributions": "My contributions",
+    "You have brought in {{types}} upstream channel types.": "You have brought in {{types}} upstream channel types.",
+    "No contributions yet": "No contributions yet",
+    "Contribute an upstream key and it will show up here.": "Contribute an upstream key and it will show up here.",
+    "No reward": "No reward",
+    "Only a live contribution can be revoked.": "Only a live contribution can be revoked."
   }
 }

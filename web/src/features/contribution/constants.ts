@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
 
+import type { StatusVariant } from '@/components/status-badge'
+
 // Rejection codes returned by controller/contribution.go for POST
 // /api/contribution/submit. The values are i18n keys, so they must be rendered
 // through a translation function, never shown raw.
@@ -104,4 +106,40 @@ export const CONTRIBUTION_STATUS_LABELS: Record<string, string> = {
 export const CONTRIBUTION_REASON_LABELS: Record<string, string> = {
   upstream_unauthorized: 'The upstream rejected this key',
   user_revoked: 'You revoked this contribution',
+}
+
+// How each contribution status reads. The labels stay in
+// CONTRIBUTION_STATUS_LABELS so the list and every other surface agree on the
+// wording; only the visual weight is decided here.
+export const CONTRIBUTION_STATUS_VARIANTS: Record<string, StatusVariant> = {
+  active: 'success',
+  dead: 'danger',
+  revoked: 'neutral',
+}
+
+// The reward is a plain subscription instance, so the contribution list and the
+// submit result describe its state with the same vocabulary the wallet already
+// renders.
+export const CONTRIBUTION_SUBSCRIPTION_STATUS_BADGES: Record<
+  string,
+  { labelKey: string; variant: StatusVariant }
+> = {
+  active: { labelKey: 'Active', variant: 'success' },
+  cancelled: { labelKey: 'Invalidated', variant: 'neutral' },
+}
+
+const CONTRIBUTION_SUBSCRIPTION_STATUS_FALLBACK = {
+  labelKey: 'Expired',
+  variant: 'neutral',
+} satisfies { labelKey: string; variant: StatusVariant }
+
+/** Resolves the badge of a reward subscription status. */
+export function contributionSubscriptionStatusBadge(status: string): {
+  labelKey: string
+  variant: StatusVariant
+} {
+  return (
+    CONTRIBUTION_SUBSCRIPTION_STATUS_BADGES[status] ??
+    CONTRIBUTION_SUBSCRIPTION_STATUS_FALLBACK
+  )
 }
