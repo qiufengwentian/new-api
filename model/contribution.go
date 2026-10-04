@@ -299,24 +299,30 @@ func HasActiveContributions() bool {
 }
 
 // ReleaseContribution is the single terminal transition of a contribution. It
-// compare-and-sets the record to status, auto-disables the contributed key in the
-// host channel with the reason, cancels the reward subscription, and - for a
-// revoke only - releases the key fingerprint.
+// auto-disables the contributed key in the host channel with the reason, cancels
+// the reward subscription, and - for a revoke only - releases the key fingerprint.
+// The record then becomes terminal.
 //
-// The ordering is deliberate and fail-safe. The compare-and-set runs first so a
-// record already in a terminal status (a repeated probe 401, a revoke racing the
-// probe) is a no-op that never disables a key twice or cancels a second
-// subscription. A no-op leaves the caller's contribution struct untouched, so the
-// caller can tell "I performed the transition" from "somebody else already did" by
-// looking at contribution.Status and skip its own audit and notification.
+// The ordering is deliberate and fail-safe: the side effects run BEFORE the record
+// is marked terminal, so a failure in the middle leaves the record active and the
+// next liveness pass retries it. The expensive failure is a dead key that keeps
+// serving traffic, never a record that is dead on paper while its key still does.
+// Every step is idempotent - re-disabling a key, re-cancelling a cancelled
+// subscription, clearing an already cleared fingerprint - so a revoke racing the
+// probe finishes safely and only the final compare-and-set decides which status the
+// record keeps. A record already in a terminal status is a no-op that leaves the
+// caller's contribution struct untouched, so the caller can tell "I performed the
+// transition" from "somebody else already did" by looking at contribution.Status
+// and skip its own audit and notification.
 //
-// The key is then disabled before the reward is cancelled: a dead key that keeps
-// serving traffic is the expensive failure, an over-running reward is not. Each
-// step logs and returns its own failure, and a partial failure is never reported as
-// success - but the record is already terminal at that point, so the probe does not
-// retry it either. Nothing is ever deleted: the record stays for audit, the key
-// text stays in the channel until an administrator reclaims it with the existing
-// cleanup action, and already-granted subscription quota is not clawed back.
+// A key that is no longer present in the host channel, or a host channel or
+// subscription an administrator already removed, is not an error: the key is
+// already unselectable and nothing is left to cancel, so the release logs it and
+// continues instead of retrying forever.
+//
+// Nothing is ever deleted: the record stays for audit, the key text stays in the
+// channel until an administrator reclaims it with the existing cleanup action, and
+// already-granted subscription quota is not clawed back.
 //
 // plainKey is the plaintext key the caller resolved from the host channel's key
 // list; death and revoke are both addressed by key string because deleting one
@@ -326,29 +332,31 @@ func ReleaseContribution(contribution *Contribution, plainKey string, status str
 		return errors.New("invalid contribution")
 	}
 
-	moved, err := markContributionTerminal(contribution.Id, status, reason)
-	if err != nil {
-		common.SysError(fmt.Sprintf("failed to move contribution %d to status %s: %v", contribution.Id, status, err))
+	var current Contribution
+	if err := DB.Where("id = ?", contribution.Id).First(&current).Error; err != nil {
 		return err
 	}
-	if !moved {
+	if current.Status != ContributionStatusActive {
 		// Already terminal: the transition happened once and its side effects
 		// must not be repeated.
 		return nil
 	}
-	contribution.Status = status
-	contribution.Reason = reason
-	contribution.ReasonTime = common.GetTimestamp()
 
 	if err := SetChannelKeyStatus(contribution.HostChannelId, plainKey, common.ChannelStatusAutoDisabled, reason); err != nil {
-		common.SysError(fmt.Sprintf("failed to auto-disable the key of contribution %d in channel %d: %v", contribution.Id, contribution.HostChannelId, err))
-		return err
+		if !errors.Is(err, ErrChannelKeyNotFound) && !errors.Is(err, gorm.ErrRecordNotFound) {
+			common.SysError(fmt.Sprintf("failed to auto-disable the key of contribution %d in channel %d: %v", contribution.Id, contribution.HostChannelId, err))
+			return err
+		}
+		common.SysLog(fmt.Sprintf("contribution %d: its host channel or key is already gone, continuing its release", contribution.Id))
 	}
 
 	if contribution.SubscriptionId > 0 {
 		if _, err := AdminInvalidateUserSubscription(contribution.SubscriptionId); err != nil {
-			common.SysError(fmt.Sprintf("failed to cancel subscription %d of contribution %d: %v", contribution.SubscriptionId, contribution.Id, err))
-			return err
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				common.SysError(fmt.Sprintf("failed to cancel subscription %d of contribution %d: %v", contribution.SubscriptionId, contribution.Id, err))
+				return err
+			}
+			common.SysLog(fmt.Sprintf("contribution %d: subscription %d is already gone, continuing its release", contribution.Id, contribution.SubscriptionId))
 		}
 	}
 
@@ -359,6 +367,18 @@ func ReleaseContribution(contribution *Contribution, plainKey string, status str
 		}
 		contribution.KeyFingerprint = nil
 	}
+
+	moved, err := markContributionTerminal(contribution.Id, status, reason)
+	if err != nil {
+		common.SysError(fmt.Sprintf("failed to move contribution %d to status %s: %v", contribution.Id, status, err))
+		return err
+	}
+	if !moved {
+		return nil
+	}
+	contribution.Status = status
+	contribution.Reason = reason
+	contribution.ReasonTime = common.GetTimestamp()
 	return nil
 }
 

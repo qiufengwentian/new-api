@@ -653,3 +653,41 @@ func TestContributionRewardGrantLifecycle(t *testing.T) {
 	assert.Greater(t, rolled.LastResetTime, twoDaysAgo, "the reset moved the base past the elapsed period")
 	assert.Greater(t, rolled.NextResetTime, common.GetTimestamp(), "the rollover scheduled the next daily reset")
 }
+
+// TestContributionReleaseStaysRetryableWhenTheKeyCannotBeDisabled pins the ordering
+// invariant of the terminal transition: the side effects run before the record becomes
+// terminal, so a release that cannot disable the key leaves the record active for the
+// next liveness pass instead of reporting a death whose key keeps serving traffic.
+func TestContributionReleaseStaysRetryableWhenTheKeyCannotBeDisabled(t *testing.T) {
+	truncateTables(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	const contributedKey = "sk-contribution-unreleasable"
+	host := seedContributionHostChannel(t, contributedKey, 1)
+	// A host channel that is no longer a multi-key channel cannot address one of its
+	// keys: this is the hard failure the release must not swallow.
+	host.ChannelInfo.IsMultiKey = false
+	require.NoError(t, host.Update())
+
+	contribution := &Contribution{
+		UserId:         501,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+
+	require.Error(t, ReleaseContribution(contribution, contributedKey, ContributionStatusDead, ContributionReasonUpstreamUnauthorized, false))
+
+	mine, err := GetContributionsByUser(501)
+	require.NoError(t, err)
+	require.Len(t, mine, 1)
+	assert.Equal(t, ContributionStatusActive, mine[0].Status, "a release that could not disable the key stays retryable")
+	assert.Empty(t, mine[0].Reason)
+	assert.Zero(t, mine[0].ReasonTime)
+}
