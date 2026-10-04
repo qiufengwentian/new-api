@@ -16,12 +16,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, it } from 'vitest'
+import i18next from 'i18next'
+import { beforeEach, expect, it, vi } from 'vitest'
 
+import { submitContribution } from '../api'
 import { ContributePanel } from '../components/contribute-panel'
-import type { ContributionCatalog } from '../types'
+import { contributionSubmitRejectionText } from '../constants'
+import type { ContributionCatalog, ContributionSubmitData } from '../types'
+
+vi.mock('../api')
 
 const enabledCatalog: ContributionCatalog = {
   enabled: true,
@@ -42,9 +48,56 @@ const enabledCatalog: ContributionCatalog = {
   ],
 }
 
+function renderPanel(catalog: ContributionCatalog = enabledCatalog) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ContributePanel catalog={catalog} />
+    </QueryClientProvider>
+  )
+}
+
+async function fillAndSubmit() {
+  const user = userEvent.setup()
+  await user.type(screen.getByLabelText('Upstream API Key'), 'sk-typed')
+  await user.click(screen.getByRole('checkbox'))
+  await user.click(screen.getByRole('button', { name: 'Contribute' }))
+}
+
+function acceptedSubmission(
+  overrides: Partial<ContributionSubmitData> = {}
+): { success: boolean; data: ContributionSubmitData } {
+  return {
+    success: true,
+    data: {
+      contribution: {
+        id: 1,
+        channel_type: 1,
+        channel_type_name: 'OpenAI',
+        status: 'active',
+        reason: '',
+        reason_time: 0,
+        key_mask: '************',
+        subscription_id: 0,
+        reward_granted: true,
+        created_time: 0,
+      },
+      reward: null,
+      redundant: false,
+      ...overrides,
+    },
+  }
+}
+
+beforeEach(() => {
+  vi.mocked(submitContribution).mockReset()
+})
+
 it('lists every enabled upstream and shows the registration link of the selected one', async () => {
   const user = userEvent.setup()
-  render(<ContributePanel catalog={enabledCatalog} />)
+  renderPanel()
 
   expect(screen.getByRole('radio', { name: 'OpenAI' })).toBeInTheDocument()
   expect(screen.getByRole('radio', { name: 'Azure' })).toBeInTheDocument()
@@ -61,7 +114,7 @@ it('lists every enabled upstream and shows the registration link of the selected
 
 it('keeps the submit button disabled until a key is entered and consent is given', async () => {
   const user = userEvent.setup()
-  render(<ContributePanel catalog={enabledCatalog} />)
+  renderPanel()
 
   const submit = screen.getByRole('button', { name: 'Contribute' })
   expect(submit).toBeDisabled()
@@ -74,9 +127,7 @@ it('keeps the submit button disabled until a key is entered and consent is given
 })
 
 it('shows no upstream form while the catalog is empty', () => {
-  render(
-    <ContributePanel catalog={{ enabled: false, entries: [], agreement: '' }} />
-  )
+  renderPanel({ enabled: false, entries: [], agreement: '' })
 
   expect(
     screen.getByText('No upstream is open for contribution right now.')
@@ -86,4 +137,100 @@ it('shows no upstream form while the catalog is empty', () => {
     screen.queryByRole('button', { name: 'Contribute' })
   ).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Upstream API Key')).not.toBeInTheDocument()
+})
+
+// The agreement is a backend-owned source string, so it has to be rendered as a
+// translation key instead of being printed raw.
+it('renders the backend agreement through the translation function', () => {
+  i18next.addResourceBundle(
+    'en',
+    'translation',
+    { 'Agreement fixture key': 'Translated agreement text' },
+    true,
+    true
+  )
+
+  renderPanel({ ...enabledCatalog, agreement: 'Agreement fixture key' })
+
+  expect(screen.getByText('Translated agreement text')).toBeInTheDocument()
+})
+
+it('clears the key input and shows the reward after a successful submit', async () => {
+  vi.mocked(submitContribution).mockResolvedValue(
+    acceptedSubmission({
+      reward: {
+        channel_type: 1,
+        subscription_id: 9,
+        plan_title: 'Pro plan',
+        amount_total: 1000,
+        amount_used: 250,
+        end_time: 0,
+      },
+    })
+  )
+
+  renderPanel()
+  await fillAndSubmit()
+
+  expect(await screen.findByText('Contribution submitted')).toBeInTheDocument()
+  expect(screen.getByText(/Pro plan/)).toBeInTheDocument()
+  expect(screen.getByLabelText('Upstream API Key')).toHaveValue('')
+  expect(submitContribution).toHaveBeenCalledWith({
+    channel_type: 1,
+    key: 'sk-typed',
+    agreed: true,
+  })
+})
+
+it('renders the redundant notice when the backend accepts a duplicate contribution', async () => {
+  vi.mocked(submitContribution).mockResolvedValue(
+    acceptedSubmission({ redundant: true })
+  )
+
+  renderPanel()
+  await fillAndSubmit()
+
+  expect(
+    await screen.findByText(
+      'This upstream already grants you a reward, so the new key was accepted as redundant.'
+    )
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText('Your reward subscription will appear here once it is issued.')
+  ).toBeInTheDocument()
+})
+
+it('keeps the key in the form when the submission is refused', async () => {
+  vi.mocked(submitContribution).mockResolvedValue({
+    success: false,
+    code: 'contribution_key_invalid',
+    message: 'the upstream key failed validation',
+  })
+
+  renderPanel()
+  await fillAndSubmit()
+
+  expect(submitContribution).toHaveBeenCalledTimes(1)
+  expect(screen.getByLabelText('Upstream API Key')).toHaveValue('sk-typed')
+  expect(screen.queryByText('Contribution submitted')).not.toBeInTheDocument()
+})
+
+// The cooldown refusal has to tell the user how long to wait; the server sends
+// the remaining seconds with the code.
+it('renders the cooldown wait time for a rate limited submission', () => {
+  const text = contributionSubmitRejectionText({
+    code: 'contribution_rate_limited',
+    retry_after_seconds: 420,
+  })
+
+  expect(text).toContain('420')
+})
+
+it('falls back to the server message for an unknown rejection code', () => {
+  expect(
+    contributionSubmitRejectionText({
+      code: 'contribution_something_new',
+      message: 'the server explained it',
+    })
+  ).toBe('the server explained it')
 })

@@ -45,11 +45,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
+import { useSubmitContribution } from '../hooks/use-submit-contribution'
 import {
   getContributionSubmitSchema,
   type ContributionCatalog,
   type ContributionSubmitValues,
 } from '../types'
+import { ContributionResult } from './contribution-result'
 
 type ContributePanelProps = {
   catalog: ContributionCatalog
@@ -66,8 +68,10 @@ export function ContributePanel(props: ContributePanelProps) {
     resolver: zodResolver(schema) as unknown as Resolver<ContributionSubmitValues>,
     defaultValues: { channel_type: firstChannelType, key: '', agreed: false },
   })
+  const submitMutation = useSubmitContribution()
   const agreed = form.watch('agreed')
   const key = form.watch('key')
+  const result = submitMutation.data?.success ? submitMutation.data.data : undefined
   const selected = entries.find(
     (entry) => entry.channel_type === selectedChannelType
   )
@@ -91,9 +95,15 @@ export function ContributePanel(props: ContributePanelProps) {
     form.setValue('channel_type', channelType, { shouldDirty: true })
   }
 
-  const submitContribution = form.handleSubmit(() => {
-    // Ticket 04 wires POST /api/contribution/submit here. The backend re-validates
-    // `agreed`, so the checkbox below is only the user-facing gate.
+  const submitContribution = form.handleSubmit((values) => {
+    submitMutation.mutate(values, {
+      onSuccess: (response) => {
+        if (response.success) {
+          // The key is never echoed back, so the form is cleared right away.
+          form.reset({ channel_type: values.channel_type, key: '', agreed: false })
+        }
+      },
+    })
   })
 
   return (
@@ -185,7 +195,7 @@ export function ContributePanel(props: ContributePanelProps) {
               <Alert>
                 <AlertTitle>{t('Agreement')}</AlertTitle>
                 <AlertDescription className='space-y-3 text-sm'>
-                  <p>{props.catalog.agreement}</p>
+                  <p>{t(props.catalog.agreement)}</p>
                   <div className='flex items-start gap-3'>
                     <Checkbox
                       id='contribution-consent'
@@ -208,13 +218,22 @@ export function ContributePanel(props: ContributePanelProps) {
                 </AlertDescription>
               </Alert>
 
-              <Button type='submit' disabled={!agreed || key.trim() === ''}>
+              <Button
+                type='submit'
+                disabled={
+                  !agreed || key.trim() === '' || submitMutation.isPending
+                }
+              >
                 {t('Contribute')}
               </Button>
             </form>
           </Form>
         </CardContent>
       </Card>
+
+      {result ? (
+        <ContributionResult result={result} />
+      ) : null}
     </div>
   )
 }
