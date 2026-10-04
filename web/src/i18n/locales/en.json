@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "This upstream is not open for contribution.",
     "This upstream key failed validation. Check the key and that it still has quota.": "This upstream key failed validation. Check the key and that it still has quota.",
     "This upstream key has already been contributed.": "This upstream key has already been contributed.",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "This upstream key was rejected by the upstream and can no longer be contributed.",
     "This upstream key is already in the shared pool.": "This upstream key is already in the shared pool.",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.",
     "Updated a contributable upstream entry": "Updated a contributable upstream entry",

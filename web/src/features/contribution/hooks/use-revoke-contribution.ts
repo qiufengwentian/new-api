@@ -23,7 +23,10 @@ import { toast } from 'sonner'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { revokeContribution } from '../api'
-import { contributionRevokeRejectionText } from '../constants'
+import {
+  CONTRIBUTION_REVOKE_REJECTION_MESSAGES,
+  contributionRejectionText,
+} from '../constants'
 import type { ContributionRevokeResponse } from '../types'
 
 /**
@@ -43,7 +46,10 @@ export function useRevokeContribution() {
         toast.success(i18next.t('Contribution revoked'))
         return
       }
-      const text = contributionRevokeRejectionText(response)
+      const text = contributionRejectionText(
+        response,
+        CONTRIBUTION_REVOKE_REJECTION_MESSAGES
+      )
       if (text === '') {
         handleServerError(response)
         return

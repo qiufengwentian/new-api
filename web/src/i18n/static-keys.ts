@@ -904,12 +904,13 @@ export const STATIC_I18N_KEYS = [
   'Subscription plan not found',
   'Another enabled entry already uses this channel type',
   // User-side submission rejections, held in CONTRIBUTION_SUBMIT_REJECTION_MESSAGES
-  // and built at runtime by contributionSubmitRejectionText.
+  // and built at runtime by contributionRejectionText.
   'You must accept the statement before submitting',
   'Contributing upstream keys is currently closed.',
   'This upstream is not open for contribution.',
   'This upstream key failed validation. Check the key and that it still has quota.',
   'This upstream key has already been contributed.',
+  'This upstream key was rejected by the upstream and can no longer be contributed.',
   'This upstream key is already in the shared pool.',
   'The upstream key could not be added to the shared pool. Please contact your administrator.',
   'The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.',

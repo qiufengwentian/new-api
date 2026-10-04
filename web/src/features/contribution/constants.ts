@@ -31,6 +31,8 @@ export const CONTRIBUTION_SUBMIT_REJECTION_MESSAGES: Record<string, string> = {
     'This upstream key failed validation. Check the key and that it still has quota.',
   contribution_fingerprint_taken:
     'This upstream key has already been contributed.',
+  contribution_key_dead:
+    'This upstream key was rejected by the upstream and can no longer be contributed.',
   contribution_key_already_pooled:
     'This upstream key is already in the shared pool.',
   contribution_pooling_failed:
@@ -45,21 +47,27 @@ export const CONTRIBUTION_RATE_LIMITED_KEY =
   'Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.'
 
 /**
- * Resolves the copy for a refused submission: localized text for a known
- * rejection code, otherwise on the readable server message.
+ * Resolves the copy for a refused contribution request: the localized text of a
+ * known rejection code from the caller's code table, otherwise the readable server
+ * message. Submission and withdrawal share this one resolver; only their code
+ * tables differ, and the rate-limit branch is simply never reached by withdrawal
+ * because the server never sends it there.
  */
-export function contributionSubmitRejectionText(response: {
-  code?: string
-  message?: string
-  retry_after_seconds?: number
-}): string {
+export function contributionRejectionText(
+  response: {
+    code?: string
+    message?: string
+    retry_after_seconds?: number
+  },
+  messages: Record<string, string>
+): string {
   if (response.code === 'contribution_rate_limited') {
     return i18next.t(CONTRIBUTION_RATE_LIMITED_KEY, {
       seconds: response.retry_after_seconds ?? 0,
     })
   }
   if (response.code) {
-    const key = CONTRIBUTION_SUBMIT_REJECTION_MESSAGES[response.code]
+    const key = messages[response.code]
     if (key) {
       return i18next.t(key)
     }
@@ -74,23 +82,6 @@ export const CONTRIBUTION_REVOKE_REJECTION_MESSAGES: Record<string, string> = {
   contribution_not_found: 'This contribution no longer exists.',
   contribution_dead_is_final:
     'This contribution was ended because the upstream rejected the key, so it cannot be revoked.',
-}
-
-/**
- * Resolves the copy for a refused withdrawal: localized text for a known
- * rejection code, otherwise the readable server message.
- */
-export function contributionRevokeRejectionText(response: {
-  code?: string
-  message?: string
-}): string {
-  if (response.code) {
-    const key = CONTRIBUTION_REVOKE_REJECTION_MESSAGES[response.code]
-    if (key) {
-      return i18next.t(key)
-    }
-  }
-  return response.message ?? ''
 }
 
 // Machine status codes of a contribution record. The values are i18n keys, so the

@@ -32,6 +32,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/contribution_setting"
@@ -69,12 +70,14 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
 	previousRedis := common.RedisEnabled
+	previousSessionSecret := common.SessionSecret
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Option{}, &model.Channel{}, &model.SubscriptionPlan{},
 		&model.UserSubscription{}, &model.Contribution{}, &model.Ability{},
 		&model.Log{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{},
+		&model.UserSession{},
 	))
 	previousOptionMap := common.OptionMap
 	model.DB, model.LOG_DB = db, db
@@ -85,6 +88,10 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 	t.Setenv("LOG_SQL_DSN", "")
 	require.NoError(t, model.InitLogDB())
 	common.RedisEnabled = false
+	// Submitting or withdrawing a contribution is a browser-session action (it
+	// hands a third-party credential into a shared channel), so the cases
+	// authenticate exactly like the product: with a dashboard login session.
+	common.SessionSecret = "contribution-catalog-test-session-secret"
 	require.NoError(t, authz.Init(db))
 	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 	model.InitOptionMap()
@@ -100,26 +107,27 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 		model.DB, model.LOG_DB = previousDB, previousLogDB
 		common.SetDatabaseTypes(previousMain, previousLog)
 		common.RedisEnabled = previousRedis
+		common.SessionSecret = previousSessionSecret
 		common.OptionMapRWMutex.Lock()
 		common.OptionMap = previousOptionMap
 		common.OptionMapRWMutex.Unlock()
 	})
 
-	pat := "contribution-catalog-test-token"
 	operator := model.User{
 		Username:    "contribution-root",
 		Role:        common.RoleRootUser,
 		Status:      common.UserStatusEnabled,
 		Group:       "default",
-		AccessToken: &pat,
 		AuthVersion: 1,
 		AffCode:     "contribution-root",
 	}
 	require.NoError(t, db.Create(&operator).Error)
+	bundle, err := service.CreateLoginSession(operator.Id, "password", "127.0.0.1", "contribution-catalog-test")
+	require.NoError(t, err)
 	// The submit cooldown lives in a process-wide cache that outlives this
 	// database, so a case must not inherit another case's failed validations.
 	t.Cleanup(func() { clearContributionValidationFailures(operator.Id) })
-	return db, pat
+	return db, bundle.AccessToken
 }
 
 // resetContributionCatalog restores the registered option module to its default
@@ -671,6 +679,162 @@ func TestContributionSubmitRejectsAlreadySubmittedKey(t *testing.T) {
 	assert.EqualValues(t, 1, stored)
 }
 
+// Death is final for the key itself: once an upstream judged a key dead, nobody may
+// submit it again for any channel type, even one whose host channel base URL would
+// produce a different per-record fingerprint. Withdrawal is the exception and only
+// frees the key, so a revoked record must not block the resubmission.
+func TestContributionSubmitRejectsAKeyJudgedDeadForAnotherChannelType(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	// The death happened under channel type 2 and another host channel, long before
+	// this submission: the fingerprint knows nothing about it, the key hash does.
+	const deadKey = "sk-contribution-judged-dead"
+	require.NoError(t, db.Create(&model.Contribution{
+		UserId:         4242,
+		ChannelType:    2,
+		HostChannelId:  99,
+		KeyFingerprint: common.GetPointer("fp-dead-elsewhere"),
+		KeyHash:        model.ContributionKeyHash(deadKey),
+		KeyMask:        model.ContributionKeyMask,
+		Status:         model.ContributionStatusDead,
+		Reason:         model.ContributionReasonUpstreamUnauthorized,
+	}).Error)
+
+	recorder, response := submitContribution(t, handler, token, 1, deadKey, true)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_key_dead", response["code"])
+	assert.NotEmpty(t, response["message"])
+	assert.NotContains(t, recorder.Body.String(), deadKey)
+
+	balanceRequests, inferenceCalls := upstream.calls()
+	assert.Zero(t, balanceRequests, "a globally dead key is refused before any upstream call")
+	assert.Zero(t, inferenceCalls)
+
+	var deadRecords int64
+	require.NoError(t, db.Model(&model.Contribution{}).Where("key_hash = ?", model.ContributionKeyHash(deadKey)).Count(&deadRecords).Error)
+	assert.EqualValues(t, 1, deadRecords, "a refused submission records nothing new")
+
+	// Withdrawal frees the key for everyone, so a revoked record never blocks.
+	const revokedKey = "sk-contribution-just-revoked"
+	require.NoError(t, db.Create(&model.Contribution{
+		UserId:         4243,
+		ChannelType:    2,
+		HostChannelId:  99,
+		KeyFingerprint: common.GetPointer("fp-revoked-elsewhere"),
+		KeyHash:        model.ContributionKeyHash(revokedKey),
+		KeyMask:        model.ContributionKeyMask,
+		Status:         model.ContributionStatusRevoked,
+		Reason:         model.ContributionReasonUserRevoked,
+	}).Error)
+
+	_, response = submitContribution(t, handler, token, 1, revokedKey, true)
+	require.Equal(t, true, response["success"], "a revoked key is free to be contributed again: %+v", response)
+}
+
+// A reward grant that failed leaves an active record flagged rewarded but pointing
+// at no subscription. Resubmitting that same key must not answer "fingerprint
+// taken": the key is already pooled and recorded, so only the missing grant is
+// retried and the contributor gets the normal success payload.
+func TestContributionSubmitRetriesAFailedRewardForItsOwnRecord(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	var operator model.User
+	require.NoError(t, db.Where("username = ?", "contribution-root").First(&operator).Error)
+
+	const submittedKey = "sk-contribution-recover-reward"
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	require.NoError(t, model.AppendOrEnableChannelKey(hostChannelId, submittedKey))
+	failed := &model.Contribution{
+		UserId:         operator.Id,
+		ChannelType:    1,
+		HostChannelId:  hostChannelId,
+		KeyFingerprint: common.GetPointer(model.ContributionKeyFingerprint(channel.GetBaseURL(), submittedKey)),
+		KeyHash:        model.ContributionKeyHash(submittedKey),
+		KeyMask:        model.ContributionKeyMask,
+		Status:         model.ContributionStatusActive,
+		RewardGranted:  true,
+		SubscriptionId: 0,
+	}
+	require.NoError(t, failed.Create())
+
+	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+	data := contributionDataOf(t, response)
+	assert.Equal(t, false, data["redundant"], "a recovered grant is a normal rewarded submission")
+	reward, ok := data["reward"].(map[string]any)
+	require.True(t, ok, "the retried grant answers with the reward it produced")
+	subscriptionId := int(reward["subscription_id"].(float64))
+	require.NotZero(t, subscriptionId)
+
+	// The existing record is completed in place: no duplicate is recorded and the
+	// key is not pooled a second time.
+	var stored []model.Contribution
+	require.NoError(t, db.Find(&stored).Error)
+	require.Len(t, stored, 1)
+	assert.Equal(t, failed.Id, stored[0].Id)
+	assert.Equal(t, subscriptionId, stored[0].SubscriptionId, "the recovered record points at its reward")
+	pooled, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled\n"+submittedKey, pooled.Key)
+
+	requestId := recorder.Header().Get(common.RequestIdKey)
+	require.NotEmpty(t, requestId)
+	var audits []model.AuditLog
+	require.NoError(t, db.Where("request_id = ? AND category = ?", requestId, model.AuditCategoryOperation).Find(&audits).Error)
+	actions := map[string]bool{}
+	for _, audit := range audits {
+		if audit.Other.Op == nil {
+			continue
+		}
+		actions[audit.Other.Op.Action] = true
+	}
+	assert.True(t, actions["contribution.grant"], "the recovered grant is audited")
+	assert.True(t, actions["contribution.submit"], "the retry is audited as a submission")
+}
+
+// "One upstream counts once" is judged on a reward that actually exists: an active
+// record whose grant failed must not make a later key of the same channel type
+// redundant, or the contributor would never receive the promised reward.
+func TestContributionSubmitRewardsAfterAnEarlierGrantNeverCompleted(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	var operator model.User
+	require.NoError(t, db.Where("username = ?", "contribution-root").First(&operator).Error)
+	failed := &model.Contribution{
+		UserId:         operator.Id,
+		ChannelType:    1,
+		HostChannelId:  hostChannelId,
+		KeyFingerprint: common.GetPointer("fp-earlier-failed-reward"),
+		KeyHash:        model.ContributionKeyHash("sk-earlier-failed-reward"),
+		KeyMask:        model.ContributionKeyMask,
+		Status:         model.ContributionStatusActive,
+		RewardGranted:  true,
+		SubscriptionId: 0,
+	}
+	require.NoError(t, failed.Create())
+
+	_, response := submitContribution(t, handler, token, 1, "sk-contribution-after-failure", true)
+	data := contributionDataOf(t, response)
+	assert.Equal(t, false, data["redundant"], "an unrewarded active record does not make the new key redundant")
+	require.NotNil(t, data["reward"], "the new submission is rewarded")
+
+	var stored []model.Contribution
+	require.NoError(t, db.Find(&stored).Error)
+	require.Len(t, stored, 2)
+	assert.Equal(t, failed.Id, stored[0].Id)
+	assert.True(t, stored[1].RewardGranted)
+	assert.NotZero(t, stored[1].SubscriptionId)
+}
+
 // A second key of a channel type the user already contributes to is still
 // accepted into the pool, but it is marked as a redundant reward.
 func TestContributionSubmitAcceptsRedundantKeyWithoutReward(t *testing.T) {
@@ -769,23 +933,24 @@ func TestContributionSubmitCoolsDownAfterRepeatedValidationFailures(t *testing.T
 // POST /api/contribution/revoke
 // ---------------------------------------------------------------------------
 
-// seedContributionRevokeUser creates an ordinary signed-in user with a personal
-// access token, so a case can act as that user through UserAuth.
+// seedContributionRevokeUser creates an ordinary signed-in user with a dashboard
+// login session, so a case can act as that user through UserAuth. A personal
+// access token cannot perform a contribution write any more.
 func seedContributionRevokeUser(t *testing.T, db *gorm.DB, username string) (int, string) {
 	t.Helper()
-	pat := "contribution-revoke-token-" + username
 	user := model.User{
 		Username:    username,
 		Password:    "unused-password-hash",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Group:       "default",
-		AccessToken: &pat,
 		AuthVersion: 1,
 		AffCode:     username,
 	}
 	require.NoError(t, db.Create(&user).Error)
-	return user.Id, pat
+	bundle, err := service.CreateLoginSession(user.Id, "password", "127.0.0.1", username)
+	require.NoError(t, err)
+	return user.Id, bundle.AccessToken
 }
 
 // contributionRevokeFixture is one live contribution: the owner's key is pooled in
@@ -826,7 +991,7 @@ func seedContributionRevokeFixture(t *testing.T, db *gorm.DB, prefix string) *co
 		ChannelType:    1,
 		HostChannelId:  fixture.hostChannelId,
 		KeyFingerprint: common.GetPointer(fixture.fingerprint),
-		KeyMask:        model.MaskContributionKey(fixture.key),
+		KeyMask:        model.ContributionKeyMask,
 		Status:         model.ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -1063,7 +1228,7 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 			UserId:        userId,
 			ChannelType:   channelType,
 			HostChannelId: 1,
-			KeyMask:       model.MaskContributionKey(pooledKey),
+			KeyMask:       model.ContributionKeyMask,
 			Status:        status,
 			RewardGranted: status == model.ContributionStatusActive,
 		}
@@ -1144,6 +1309,22 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	assert.NotContains(t, recorder.Body.String(), "fp-mine", "the fingerprint never leaves the database")
 }
 
+// Submitting pools a third-party credential into a shared channel and withdrawing
+// pulls it back out, so both are browser-session actions: a personal access token
+// must not perform them, whatever scopes it carries. Scoped tokens could otherwise
+// turn a wallet-scoped token into control over shared upstream credentials.
+func TestContributionWritesRequireASessionNotAnAccessToken(t *testing.T) {
+	for _, key := range []string{
+		"POST /api/contribution/submit",
+		"POST /api/contribution/revoke",
+	} {
+		rule, declared := middleware.AccessTokenRouteRule(key)
+		require.True(t, declared, key)
+		assert.Equal(t, "session", rule.Kind(), key)
+		assert.Empty(t, rule.Scope(), key)
+	}
+}
+
 // The catalog read reports the account's contribution summary as well, without
 // losing any field the contribute panel already renders.
 func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
@@ -1172,7 +1353,7 @@ func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
 			ChannelType:    seed.channelType,
 			HostChannelId:  1,
 			KeyFingerprint: common.GetPointer(fmt.Sprintf("fp-catalog-summary-%d", index)),
-			KeyMask:        model.MaskContributionKey("sk-catalog-summary"),
+			KeyMask:        model.ContributionKeyMask,
 			Status:         seed.status,
 		}
 		require.NoError(t, contribution.Create())

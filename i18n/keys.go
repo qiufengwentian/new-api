@@ -345,6 +345,9 @@ const (
 	MsgContributionKeyDeadContent    = "contribution.key_dead_content"
 	MsgContributionKeyRevokedTitle   = "contribution.key_revoked_title"
 	MsgContributionKeyRevokedContent = "contribution.key_revoked_content"
+	// MsgContributionChannelTypeFallback is the last-resort upstream name of a
+	// contribution whose channel type has no catalog entry and no built-in name.
+	MsgContributionChannelTypeFallback = "contribution.channel_type_fallback"
 )
 
 // Custom OAuth provider related messages

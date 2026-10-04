@@ -22,8 +22,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -97,7 +99,7 @@ func ProbeContributionLiveness(ctx context.Context) error {
 			continue
 		}
 		recordContributionKillAudit(contribution)
-		notifyContributionContributor(contribution)
+		NotifyContributionContributor(contribution, i18n.MsgContributionKeyDeadTitle, i18n.MsgContributionKeyDeadContent)
 	}
 	return nil
 }
@@ -118,29 +120,49 @@ func recordContributionKillAudit(contribution *model.Contribution) {
 		})
 }
 
-// notifyContributionContributor tells the contributor that their key died, through
-// the existing per-user notification channel (email, webhook, Bark or Gotify).
-// There is no per-user in-site inbox to fall back on.
+// ContributionUpstreamName names the upstream a contribution belongs to for
+// user-facing copy: the administrator's catalog name when the channel type still
+// has an enabled entry, otherwise the built-in channel type name, and finally a
+// translated "channel type N" for a type this build does not know. The final
+// fallback goes through the same backend i18n bundle as the rest of the notice, so
+// no language ever renders a raw English literal.
 //
-// The notice is best-effort: the key is already disabled and the reward already
-// cancelled, so a refused notification - the limit gate, an unreachable webhook -
-// is logged and never fails the kill.
-func notifyContributionContributor(contribution *model.Contribution) {
+// It is the one name resolver shared by the liveness probe's death notice and the
+// user-facing revoke notice; the contribution list renders through it as well.
+func ContributionUpstreamName(channelType int, language string) string {
+	if entry, found := contribution_setting.EntryByChannelType(channelType); found && strings.TrimSpace(entry.Name) != "" {
+		return entry.Name
+	}
+	if name := constant.GetChannelTypeName(channelType); name != "" && name != "Unknown" {
+		return name
+	}
+	return i18n.Translate(language, i18n.MsgContributionChannelTypeFallback, map[string]any{"Type": channelType})
+}
+
+// NotifyContributionContributor tells the contributor about a terminal transition
+// of one of their contributions, through the existing per-user notification channel
+// (email, webhook, Bark or Gotify). There is no per-user in-site inbox to fall back
+// on. titleKey and contentKey are the two backend i18n message ids of the event, so
+// death and revocation share one delivery path and differ only by the copy they
+// carry.
+//
+// The notice is best-effort: the key is already out of the pool and the reward
+// already cancelled, so a refused notification - the limit gate, an unreachable
+// webhook - is logged and never fails the transition.
+func NotifyContributionContributor(contribution *model.Contribution, titleKey string, contentKey string) {
 	contributor, err := model.GetUserById(contribution.UserId, false)
 	if err != nil {
 		common.SysError(fmt.Sprintf("failed to load contributor %d to notify about contribution %d: %v", contribution.UserId, contribution.Id, err))
 		return
 	}
 	setting := contributor.GetSetting()
-	upstream := fmt.Sprintf("channel type %d", contribution.ChannelType)
-	if entry, found := contribution_setting.EntryByChannelType(contribution.ChannelType); found && entry.Name != "" {
-		upstream = entry.Name
-	}
 	notice := dto.NewNotify(dto.NotifyTypeChannelUpdate,
-		i18n.Translate(setting.Language, i18n.MsgContributionKeyDeadTitle),
-		i18n.Translate(setting.Language, i18n.MsgContributionKeyDeadContent, map[string]any{"Upstream": upstream}),
+		i18n.Translate(setting.Language, titleKey),
+		i18n.Translate(setting.Language, contentKey, map[string]any{
+			"Upstream": ContributionUpstreamName(contribution.ChannelType, setting.Language),
+		}),
 		nil)
 	if err := NotifyUser(contributor.Id, contributor.Email, setting, notice); err != nil {
-		common.SysLog(fmt.Sprintf("failed to notify contributor %d about the dead contribution %d: %v", contributor.Id, contribution.Id, err))
+		common.SysLog(fmt.Sprintf("failed to notify contributor %d about contribution %d: %v", contributor.Id, contribution.Id, err))
 	}
 }

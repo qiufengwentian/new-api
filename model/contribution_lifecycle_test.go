@@ -63,32 +63,158 @@ func TestContributionKeyFingerprint(t *testing.T) {
 	)
 }
 
-// MaskContributionKey is the only way a contributed key may ever be displayed.
-// Upstream keys are live credentials handed over by a third party, so the mask
-// must not carry a prefix, a suffix or the length of the plaintext.
-func TestContributionKeyMaskNeverRevealsTheKey(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-	}{
-		{"typical provider key", "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"},
-		{"short key", "sk-1"},
-		{"empty key", ""},
-	}
+// A key an upstream ever judged dead is dead for the key itself, not for the
+// channel type or the host channel base URL it happened to be submitted under. The
+// indexed key hash is what blocks every later submission - by any user, for any
+// enabled channel type - because the per-record fingerprint changes with the base
+// URL and cannot express that rule. Withdrawal deliberately does not count.
+func TestContributionDeadKeyHashIsFinalAcrossChannelTypes(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			mask := MaskContributionKey(test.key)
-			if test.key == "" {
-				assert.Empty(t, mask)
-				return
-			}
-			assert.NotContains(t, mask, test.key)
-			for _, fragment := range []string{"sk-", "proj", "abcdefghij", "6789"} {
-				assert.NotContains(t, mask, fragment)
-			}
-		})
+	const deadKey = "sk-contribution-globally-dead"
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, deadKey))
+
+	keyHash := ContributionKeyHash(deadKey)
+	dead := &Contribution{
+		UserId:         801,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), deadKey)),
+		KeyHash:        keyHash,
+		KeyMask:        ContributionKeyMask,
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
 	}
+	require.NoError(t, dead.Create())
+
+	hasDead, err := HasDeadContributionForKeyHash(keyHash)
+	require.NoError(t, err)
+	assert.False(t, hasDead, "a live record is not a death")
+
+	require.NoError(t, ReleaseContribution(dead, deadKey, ContributionStatusDead, ContributionReasonUpstreamUnauthorized, false))
+
+	hasDead, err = HasDeadContributionForKeyHash(keyHash)
+	require.NoError(t, err)
+	assert.True(t, hasDead, "death is recorded against the key hash itself")
+
+	// The hole the hash closes: the same key submitted for a channel type whose host
+	// channel has a different base URL produces a fingerprint that has never been
+	// recorded, so the fingerprint lookup alone would accept it.
+	otherBaseFingerprint := ContributionKeyFingerprint("https://type-b.example.com", deadKey)
+	assert.NotEqual(t, *dead.KeyFingerprint, otherBaseFingerprint)
+	_, err = GetContributionByFingerprint(otherBaseFingerprint)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "a different base URL yields an unrecorded fingerprint")
+	assert.True(t, hasDead, "the key hash still blocks every channel type")
+
+	// Withdrawal frees the key: only dead is final.
+	const revokedKey = "sk-contribution-globally-revoked"
+	revoked := &Contribution{
+		UserId:         802,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), revokedKey)),
+		KeyHash:        ContributionKeyHash(revokedKey),
+		KeyMask:        ContributionKeyMask,
+		Status:         ContributionStatusActive,
+	}
+	require.NoError(t, revoked.Create())
+	require.NoError(t, ReleaseContribution(revoked, revokedKey, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+
+	hasDead, err = HasDeadContributionForKeyHash(ContributionKeyHash(revokedKey))
+	require.NoError(t, err)
+	assert.False(t, hasDead, "a revoked key is not dead and may be contributed again")
+}
+
+// The知情同意 is not just enforced, it is recorded: the exact consent statement the
+// contributor accepted at submission time is stored on the row (and audited), so
+// the wording they agreed to survives a later change of the served agreement.
+func TestContributionRecordsTheAcceptedAgreement(t *testing.T) {
+	truncateTables(t)
+
+	contribution := &Contribution{
+		UserId:         811,
+		ChannelType:    1,
+		HostChannelId:  1,
+		KeyFingerprint: common.GetPointer("fp-agreement-recorded"),
+		KeyHash:        ContributionKeyHash("sk-agreement-recorded"),
+		KeyMask:        ContributionKeyMask,
+		Agreement:      contribution_setting.AgreementText,
+		Status:         ContributionStatusActive,
+	}
+	require.NoError(t, contribution.Create())
+
+	var stored Contribution
+	require.NoError(t, DB.Where("id = ?", contribution.Id).First(&stored).Error)
+	assert.NotEmpty(t, stored.Agreement)
+	assert.Equal(t, contribution_setting.AgreementText, stored.Agreement,
+		"the accepted consent statement is recorded verbatim on the contribution")
+}
+
+// "One upstream counts once" is judged on a reward that actually exists. An active
+// record whose grant failed (flagged rewarded, but pointing at no subscription)
+// must not make a later submission redundant, or the contributor would be locked
+// out of the reward forever.
+func TestContributionRedundancyRequiresAGrantedReward(t *testing.T) {
+	truncateTables(t)
+
+	failed := &Contribution{
+		UserId:         901,
+		ChannelType:    1,
+		HostChannelId:  1,
+		KeyFingerprint: common.GetPointer("fp-unrewarded"),
+		KeyHash:        ContributionKeyHash("sk-unrewarded"),
+		KeyMask:        ContributionKeyMask,
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+		SubscriptionId: 0,
+	}
+	require.NoError(t, failed.Create())
+
+	hasRewarded, err := HasRewardedActiveContributionForType(901, 1)
+	require.NoError(t, err)
+	assert.False(t, hasRewarded, "an unrewarded active record must not make a later submission redundant")
+
+	// Attaching the instance the failed grant should have produced makes the channel
+	// type actually rewarded, which is the state the rule keys on.
+	require.NoError(t, DB.Model(&Contribution{}).Where("id = ?", failed.Id).Update("subscription_id", 4242).Error)
+	hasRewarded, err = HasRewardedActiveContributionForType(901, 1)
+	require.NoError(t, err)
+	assert.True(t, hasRewarded)
+
+	// A redundant record was never promised a reward, so it does not count either,
+	// and another channel type is judged on its own.
+	redundant := &Contribution{
+		UserId:         901,
+		ChannelType:    1,
+		HostChannelId:  1,
+		KeyFingerprint: common.GetPointer("fp-redundant"),
+		KeyHash:        ContributionKeyHash("sk-redundant"),
+		KeyMask:        ContributionKeyMask,
+		Status:         ContributionStatusActive,
+		RewardGranted:  false,
+	}
+	require.NoError(t, redundant.Create())
+	hasRewarded, err = HasRewardedActiveContributionForType(901, 2)
+	require.NoError(t, err)
+	assert.False(t, hasRewarded, "another channel type is judged separately")
+}
+
+// ContributionKeyMask is the only shape a contributed key may ever be displayed
+// in. Upstream keys are live credentials handed over by a third party, so the mask
+// is a fixed constant: it cannot carry a prefix, a suffix, a length or any other
+// fragment of the plaintext, because it never sees the plaintext at all.
+func TestContributionKeyMaskNeverRevealsTheKey(t *testing.T) {
+	assert.NotEmpty(t, ContributionKeyMask)
+	for _, fragment := range []string{"sk-", "proj", "abcdefghij", "6789"} {
+		assert.NotContains(t, ContributionKeyMask, fragment)
+	}
+	// The mask is a constant rather than a function of the key, so every
+	// contributed key displays identically and no surface can leak a key fragment.
+	assert.Equal(t, "************", ContributionKeyMask)
 }
 
 // seedContributionHostChannel inserts the real multi-key host channel a
@@ -208,7 +334,7 @@ func TestContributionPoolingLifecycle(t *testing.T) {
 			ChannelType:    1,
 			HostChannelId:  host.Id,
 			KeyFingerprint: common.GetPointer(fingerprint),
-			KeyMask:        MaskContributionKey(submittedKey),
+			KeyMask:        ContributionKeyMask,
 			Status:         ContributionStatusActive,
 			RewardGranted:  true,
 		}
@@ -224,7 +350,7 @@ func TestContributionPoolingLifecycle(t *testing.T) {
 			ChannelType:    1,
 			HostChannelId:  host.Id,
 			KeyFingerprint: common.GetPointer(fingerprint),
-			KeyMask:        MaskContributionKey(submittedKey),
+			KeyMask:        ContributionKeyMask,
 			Status:         ContributionStatusActive,
 			RewardGranted:  true,
 		}
@@ -270,7 +396,7 @@ func TestContributionReleaseFreesFingerprintOnlyWhenAsked(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 	}
 	require.NoError(t, contribution.Create())
@@ -292,7 +418,7 @@ func TestContributionReleaseFreesFingerprintOnlyWhenAsked(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(fingerprint),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 	}
 	require.NoError(t, resubmitted.Create(), "release makes the same key submittable again")
@@ -341,7 +467,7 @@ func TestContributionDeathIsTerminal(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -399,7 +525,7 @@ func TestContributionDeathIsTerminal(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(fingerprint),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -480,6 +606,35 @@ func TestContributionCatalogAllowsAtMostOneEnabledEntryPerChannelType(t *testing
 	assert.Equal(t, 2, len(contribution_setting.AllEntries()))
 }
 
+// An admin may disable the entry of a channel type and enable another one for the
+// same channel type. Resolution has to follow the enabled entry, not the first
+// stored one: otherwise submit would resolve the disabled entry and refuse a valid
+// open upstream, and a contributor notice would name the wrong upstream.
+func TestContributionEntryByChannelTypeResolvesOnlyEnabledEntries(t *testing.T) {
+	contribution_setting.SetOptionWriter(func(string, string) error { return nil })
+	t.Cleanup(func() {
+		require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{}))
+	})
+
+	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
+		{Id: 1, ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
+		{Id: 2, ChannelType: 4, Name: "Enabled B", Enabled: true, HostChannelId: 2, PlanId: 2},
+	}))
+
+	resolved, found := contribution_setting.EntryByChannelType(4)
+	require.True(t, found)
+	assert.Equal(t, "Enabled B", resolved.Name, "the enabled entry resolves, not the disabled first entry")
+	assert.Equal(t, 2, resolved.HostChannelId)
+
+	// With no enabled entry the channel type does not resolve at all, so submit
+	// refuses it and the notice falls back to the channel type name.
+	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
+		{Id: 1, ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
+	}))
+	_, found = contribution_setting.EntryByChannelType(4)
+	assert.False(t, found, "a disabled entry never owns a submission")
+}
+
 // openContributionRewardTestDB hands one test its own shared-cache in-memory
 // database with a real connection pool.
 //
@@ -556,7 +711,7 @@ func TestContributionRewardGrantLifecycle(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -610,7 +765,7 @@ func TestContributionRewardGrantLifecycle(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), "sk-contribution-redundant")),
-		KeyMask:        MaskContributionKey("sk-contribution-redundant"),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  false,
 	}
@@ -676,7 +831,7 @@ func TestContributionReleaseStaysRetryableWhenTheKeyCannotBeDisabled(t *testing.
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
-		KeyMask:        MaskContributionKey(contributedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -735,7 +890,7 @@ func TestContributionRevokeCompletesWhenTheKeyIsAlreadyGone(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), reclaimedKey)),
-		KeyMask:        MaskContributionKey(reclaimedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -812,7 +967,7 @@ func TestContributionRevokeIsTerminal(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), revokedKey)),
-		KeyMask:        MaskContributionKey(revokedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 		RewardGranted:  true,
 	}
@@ -870,7 +1025,7 @@ func TestContributionRevokeIsTerminal(t *testing.T) {
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(fingerprint),
-		KeyMask:        MaskContributionKey(revokedKey),
+		KeyMask:        ContributionKeyMask,
 		Status:         ContributionStatusActive,
 	}
 	require.NoError(t, resubmitted.Create(), "a revoked fingerprint is free again")

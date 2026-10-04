@@ -6930,6 +6930,7 @@
     "This upstream is not open for contribution.": "この上流は提供を受け付けていません。",
     "This upstream key failed validation. Check the key and that it still has quota.": "この上流キーは検証に失敗しました。キーが正しく、まだ残量があるか確認してください。",
     "This upstream key has already been contributed.": "この上流キーはすでに提供済みです。",
+    "This upstream key was rejected by the upstream and can no longer be contributed.": "この上流キーは上流側で拒否されたため、もう提供できません。",
     "This upstream key is already in the shared pool.": "この上流キーはすでに共有プールにあります。",
     "Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.": "検証の失敗が多すぎます。{{seconds}} 秒待ってから再試行してください。",
     "Updated a contributable upstream entry": "貢献可能な上流の項目を更新しました",
