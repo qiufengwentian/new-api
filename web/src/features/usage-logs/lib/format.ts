@@ -556,6 +556,9 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'subscription.plan_create': 'Created a subscription plan',
   'subscription.plan_update': 'Updated a subscription plan',
   'subscription.bind': 'Bound a subscription',
+  // Contributable upstream keys
+  'contribution.submit': 'Submitted a contributed upstream key',
+  'contribution.grant': 'Granted the contribution reward',
   // Contributable upstream key catalog
   'contribution.catalog_create': 'Created a contributable upstream entry',
   'contribution.catalog_update': 'Updated a contributable upstream entry',

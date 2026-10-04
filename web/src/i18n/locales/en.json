@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "Failed to delete contribution entry",
     "Failed to submit the upstream key": "Failed to submit the upstream key",
     "Failed to update contribution entry": "Failed to update contribution entry",
+    "Granted the contribution reward": "Granted the contribution reward",
     "Hint shown inside the key input on the user page.": "Hint shown inside the key input on the user page.",
     "Host Channel": "Host Channel",
     "Host channel is required": "Host channel is required",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "Select a multi-key channel",
     "Select a subscription plan": "Select a subscription plan",
     "Shown to users so they can create an upstream account first.": "Shown to users so they can create an upstream account first.",
+    "Submitted a contributed upstream key": "Submitted a contributed upstream key",
     "Subscription Plan": "Subscription Plan",
     "Subscription plan is required": "Subscription plan is required",
     "Subscription plan not found": "Subscription plan not found",
     "The administrator has not opened any upstream for contribution yet.": "The administrator has not opened any upstream for contribution yet.",
     "The multi-key channel that receives contributed keys.": "The multi-key channel that receives contributed keys.",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "The upstream key could not be added to the shared pool. Please contact your administrator.",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "This upstream already grants you a reward, so the new key was accepted as redundant.",
     "This upstream is not open for contribution.": "This upstream is not open for contribution.",
     "This upstream key failed validation. Check the key and that it still has quota.": "This upstream key failed validation. Check the key and that it still has quota.",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "Upstream key submitted successfully",
     "Users can pick this upstream while it is enabled.": "Users can pick this upstream while it is enabled.",
     "While off, no upstream is offered and the user page stays empty.": "While off, no upstream is offered and the user page stays empty.",
-    "You must accept the statement before submitting": "You must accept the statement before submitting",
-    "Your reward subscription will appear here once it is issued.": "Your reward subscription will appear here once it is issued."
+    "You must accept the statement before submitting": "You must accept the statement before submitting"
   }
 }

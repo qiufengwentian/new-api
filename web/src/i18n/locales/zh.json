@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "删除可贡献上游条目失败",
     "Failed to submit the upstream key": "提交上游 Key 失败",
     "Failed to update contribution entry": "更新可贡献上游条目失败",
+    "Granted the contribution reward": "发放了贡献回馈",
     "Hint shown inside the key input on the user page.": "在用户页面的 Key 输入框中显示的提示。",
     "Host Channel": "承载渠道",
     "Host channel is required": "请选择承载渠道",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "选择多密钥渠道",
     "Select a subscription plan": "选择订阅套餐",
     "Shown to users so they can create an upstream account first.": "展示给用户，方便其先注册上游账号。",
+    "Submitted a contributed upstream key": "提交了一把贡献的上游 Key",
     "Subscription Plan": "订阅套餐",
     "Subscription plan is required": "请选择订阅套餐",
     "Subscription plan not found": "未找到订阅套餐",
     "The administrator has not opened any upstream for contribution yet.": "管理员尚未开放任何可贡献的上游。",
     "The multi-key channel that receives contributed keys.": "接收贡献 Key 的多密钥渠道。",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "无法把该上游 Key 加入共享号池，请联系管理员。",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "贡献已记录，但回馈订阅未能发放。请联系管理员。",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "该上游已为你发放回馈，这把新 Key 仅作为冗余接入。",
     "This upstream is not open for contribution.": "该上游未开放贡献。",
     "This upstream key failed validation. Check the key and that it still has quota.": "该上游 Key 校验失败。请检查 Key 是否正确且仍有额度。",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "上游 Key 提交成功",
     "Users can pick this upstream while it is enabled.": "启用后用户即可选择这个上游。",
     "While off, no upstream is offered and the user page stays empty.": "关闭后不再提供任何上游，用户页面保持为空。",
-    "You must accept the statement before submitting": "提交前必须同意上述说明",
-    "Your reward subscription will appear here once it is issued.": "回馈订阅发放后将在此显示。"
+    "You must accept the statement before submitting": "提交前必须同意上述说明"
   }
 }

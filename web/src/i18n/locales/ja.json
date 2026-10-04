@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "項目の削除に失敗しました",
     "Failed to submit the upstream key": "上流キーの送信に失敗しました",
     "Failed to update contribution entry": "項目の更新に失敗しました",
+    "Granted the contribution reward": "貢献報酬を付与しました",
     "Hint shown inside the key input on the user page.": "ユーザーページのキー入力欄に表示されるヒント。",
     "Host Channel": "担当チャネル",
     "Host channel is required": "担当チャネルを選択してください",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "マルチキーチャネルを選択",
     "Select a subscription plan": "サブスクリプションプランを選択",
     "Shown to users so they can create an upstream account first.": "ユーザーが先に上流のアカウントを作成できるように表示します。",
+    "Submitted a contributed upstream key": "提供された上流キーを送信しました",
     "Subscription Plan": "サブスクリプションプラン",
     "Subscription plan is required": "サブスクリプションプランを選択してください",
     "Subscription plan not found": "サブスクリプションプランが見つかりません",
     "The administrator has not opened any upstream for contribution yet.": "管理者はまだ貢献可能な上流を公開していません。",
     "The multi-key channel that receives contributed keys.": "提供されたキーを受け取るマルチキーチャネル。",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "上流キーを共有プールに追加できませんでした。管理者にお問い合わせください。",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "貢献は記録されましたが、報酬サブスクリプションを発行できませんでした。管理者にお問い合わせください。",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "この上流からはすでに特典を受け取っているため、新しいキーは冗長として受理されました。",
     "This upstream is not open for contribution.": "この上流は提供を受け付けていません。",
     "This upstream key failed validation. Check the key and that it still has quota.": "この上流キーは検証に失敗しました。キーが正しく、まだ残量があるか確認してください。",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "上流キーを送信しました",
     "Users can pick this upstream while it is enabled.": "有効にするとユーザーがこの上流を選べます。",
     "While off, no upstream is offered and the user page stays empty.": "オフの間は上流を提示せず、ユーザーページは空のままです。",
-    "You must accept the statement before submitting": "送信する前に説明に同意してください",
-    "Your reward subscription will appear here once it is issued.": "特典のサブスクリプションは発行されるとここに表示されます。"
+    "You must accept the statement before submitting": "送信する前に説明に同意してください"
   }
 }

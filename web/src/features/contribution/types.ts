@@ -40,7 +40,7 @@ export interface ContributionCatalogResponse {
   data?: ContributionCatalog
 }
 
-/** The subscription instance a contribution produced; null until it is granted. */
+/** The subscription instance a contribution produced; null when it granted none. */
 export interface ContributionReward {
   channel_type: number
   subscription_id: number
@@ -48,6 +48,8 @@ export interface ContributionReward {
   amount_total: number
   amount_used: number
   end_time: number
+  /** Subscription status: active / cancelled / expired. */
+  status: string
 }
 
 /** One contribution record as the submit response returns it. */
