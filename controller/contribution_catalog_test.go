@@ -23,10 +23,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
@@ -48,6 +50,7 @@ func newContributionCatalogTestRouter() *gin.Engine {
 	api := router.Group("/api")
 	userRoute := api.Group("/contribution", middleware.UserAuth())
 	userRoute.GET("/catalog", GetContributionCatalog)
+	userRoute.POST("/submit", SubmitContribution)
 	adminRoute := api.Group("/contribution/admin", middleware.RootAuth())
 	adminRoute.GET("/catalog", GetContributionCatalogAdmin)
 	adminRoute.POST("/catalog", CreateContributionCatalogEntry)
@@ -68,11 +71,17 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Option{}, &model.Channel{}, &model.SubscriptionPlan{},
+		&model.Contribution{}, &model.Ability{},
 		&model.Log{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{},
 	))
 	previousOptionMap := common.OptionMap
 	model.DB, model.LOG_DB = db, db
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	// The handlers select reserved-word columns (users.group, tokens.key) whose
+	// quoting depends on the active dialect; InitLogDB with no separate log DSN
+	// installs those column names for this database.
+	t.Setenv("LOG_SQL_DSN", "")
+	require.NoError(t, model.InitLogDB())
 	common.RedisEnabled = false
 	require.NoError(t, authz.Init(db))
 	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
@@ -105,6 +114,9 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 		AffCode:     "contribution-root",
 	}
 	require.NoError(t, db.Create(&operator).Error)
+	// The submit cooldown lives in a process-wide cache that outlives this
+	// database, so a case must not inherit another case's failed validations.
+	t.Cleanup(func() { clearContributionValidationFailures(operator.Id) })
 	return db, pat
 }
 
@@ -333,5 +345,397 @@ func TestContributionCatalogAdminMutationsAreAudited(t *testing.T) {
 		assert.Equal(t, tc.action, audits[0].Action)
 		assert.True(t, audits[0].Success)
 		assert.Equal(t, common.RoleRootUser, audits[0].ActorRole)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/contribution/submit
+// ---------------------------------------------------------------------------
+
+// contributionSubmitUpstream is a real OpenAI-compatible upstream standing in
+// for the third party a user contributes from. The submit-time balance probe and
+// the minimal inference both travel over HTTP to it, so the whole first-time
+// validation runs for real instead of being stubbed out.
+type contributionSubmitUpstream struct {
+	server *httptest.Server
+
+	mu              sync.Mutex
+	balanceStatus   int
+	inferenceStatus int
+	balanceRequests int
+	inferenceCalls  int
+}
+
+func newContributionSubmitUpstream(t *testing.T) *contributionSubmitUpstream {
+	t.Helper()
+	upstream := &contributionSubmitUpstream{}
+	upstream.server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		upstream.mu.Lock()
+		defer upstream.mu.Unlock()
+
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/v1/chat/completions"):
+			upstream.inferenceCalls++
+			if upstream.inferenceStatus != 0 {
+				writer.WriteHeader(upstream.inferenceStatus)
+				_, _ = writer.Write([]byte(`{"error":{"message":"invalid api key","type":"invalid_request_error"}}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"id":"chatcmpl-contribution","object":"chat.completion","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`))
+		case strings.HasSuffix(request.URL.Path, "/billing/subscription"):
+			upstream.balanceRequests++
+			if upstream.balanceStatus != 0 {
+				writer.WriteHeader(upstream.balanceStatus)
+				_, _ = writer.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+				return
+			}
+			_, _ = writer.Write([]byte(`{"object":"billing_subscription","hard_limit_usd":100,"has_payment_method":true}`))
+		case strings.HasSuffix(request.URL.Path, "/billing/usage"):
+			_, _ = writer.Write([]byte(`{"object":"list","total_usage":0}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.server.Close)
+	return upstream
+}
+
+func (u *contributionSubmitUpstream) rejectBalanceWith(statusCode int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.balanceStatus = statusCode
+}
+
+func (u *contributionSubmitUpstream) rejectInferenceWith(statusCode int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.inferenceStatus = statusCode
+}
+
+func (u *contributionSubmitUpstream) calls() (balanceRequests int, inferenceCalls int) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.balanceRequests, u.inferenceCalls
+}
+
+// seedContributionSubmitSetup installs the real pieces a submission needs: a
+// multi-key host channel that points at the fake upstream, a reward plan, and an
+// enabled catalog entry bound to both.
+func seedContributionSubmitSetup(t *testing.T, db *gorm.DB, handler http.Handler, token string, upstreamURL string) int {
+	t.Helper()
+	// The minimal inference runs through real relay billing, which refuses a model
+	// without a configured price. Self-use mode is the repo's supported way to run
+	// the relay path without a price table.
+	withSelfUseModeEnabled(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() {
+		common.MemoryCacheEnabled = previousCache
+		model.InitChannelCache()
+	})
+
+	baseURL := upstreamURL
+	hostChannel := model.Channel{
+		Id:          1,
+		Type:        1,
+		Name:        "contribution-host",
+		Key:         "sk-host-pooled",
+		BaseURL:     &baseURL,
+		Status:      common.ChannelStatusEnabled,
+		Models:      "gpt-4o-mini",
+		Group:       "default",
+		ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeySize: 1, MultiKeyMode: constant.MultiKeyModePolling},
+	}
+	require.NoError(t, db.Create(&hostChannel).Error)
+	seedContributionPlan(t, db, 1)
+
+	entry := `{"channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}`
+	created := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/admin/catalog", entry))
+	require.Equal(t, true, created["success"], "body: %+v", created)
+	switched := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPut, "/api/contribution/admin/global", `{"enabled":true}`))
+	require.Equal(t, true, switched["success"], "body: %+v", switched)
+	return hostChannel.Id
+}
+
+func submitContribution(t *testing.T, handler http.Handler, token string, channelType int, key string, agreed bool) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	body := fmt.Sprintf(`{"channel_type":%d,"key":%q,"agreed":%t}`, channelType, key, agreed)
+	recorder := callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit", body)
+	return recorder, decodeContributionResponse(t, recorder)
+}
+
+func contributionDataOf(t *testing.T, response map[string]any) map[string]any {
+	t.Helper()
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	data, ok := response["data"].(map[string]any)
+	require.True(t, ok)
+	return data
+}
+
+func contributionRecordOf(t *testing.T, response map[string]any) map[string]any {
+	t.Helper()
+	record, ok := contributionDataOf(t, response)["contribution"].(map[string]any)
+	require.True(t, ok)
+	return record
+}
+
+// Consent is a server-side gate, not a frontend affordance: a request that does
+// not carry agreed=true must be refused before anything is probed or pooled.
+func TestContributionSubmitRequiresServerSideConsent(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	recorder, response := submitContribution(t, handler, token, 1, "sk-without-consent", false)
+
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_consent_required", response["code"])
+	assert.NotContains(t, recorder.Body.String(), "sk-without-consent")
+	balanceRequests, inferenceCalls := upstream.calls()
+	assert.Zero(t, balanceRequests, "consent is checked before the upstream is touched")
+	assert.Zero(t, inferenceCalls)
+
+	channel, err := model.GetChannelById(1, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled", channel.Key)
+	var stored int64
+	require.NoError(t, db.Model(&model.Contribution{}).Count(&stored).Error)
+	assert.Zero(t, stored)
+}
+
+// The global switch and the per-entry switch decide whether a channel type can be
+// contributed to at all, and each refusal is machine-readable.
+func TestContributionSubmitRejectsUnavailableUpstream(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	_, response := submitContribution(t, handler, token, 7, "sk-unknown-type", true)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_channel_type_unknown", response["code"])
+
+	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPut, "/api/contribution/admin/global", `{"enabled":false}`))["success"])
+	_, response = submitContribution(t, handler, token, 1, "sk-globally-disabled", true)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_global_disabled", response["code"])
+}
+
+// The happy path: the key is validated against the upstream, appended to the host
+// channel, recorded by fingerprint, and never echoed back.
+func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	const submittedKey = "sk-contribution-valid-key"
+	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+	data := contributionDataOf(t, response)
+
+	// The plaintext key is nowhere in the response, in any shape.
+	assert.NotContains(t, recorder.Body.String(), submittedKey)
+	record := contributionRecordOf(t, response)
+	assert.Equal(t, float64(1), record["channel_type"])
+	assert.Equal(t, "active", record["status"])
+	assert.NotEmpty(t, record["key_mask"])
+	assert.NotContains(t, fmt.Sprint(record["key_mask"]), submittedKey)
+	assert.Nil(t, data["reward"], "ticket 05 fills the reward instance")
+	assert.Equal(t, false, data["redundant"])
+
+	// The key is pooled, enabled, and therefore selectable for relay traffic.
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled\n"+submittedKey, channel.Key)
+	assert.Equal(t, common.ChannelStatusEnabled, channel.GetMultiKeyStatus(1))
+
+	// The record tracks the fingerprint, not the key, and carries no plaintext.
+	var stored model.Contribution
+	require.NoError(t, db.Where("id = ?", int(record["id"].(float64))).First(&stored).Error)
+	require.NotNil(t, stored.KeyFingerprint)
+	assert.Equal(t, model.ContributionKeyFingerprint(channel.GetBaseURL(), submittedKey), *stored.KeyFingerprint)
+	assert.Equal(t, model.ContributionStatusActive, stored.Status)
+	assert.True(t, stored.RewardGranted)
+	assert.Zero(t, stored.SubscriptionId, "the reward instance is ticket 05")
+	assert.Empty(t, stored.Reason)
+
+	var all []model.Contribution
+	require.NoError(t, db.Find(&all).Error)
+	encoded, err := common.Marshal(all)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), submittedKey, "no contribution row may carry the plaintext key")
+
+	// The submission is audited, and the audit carries no key material either.
+	requestId := recorder.Header().Get(common.RequestIdKey)
+	require.NotEmpty(t, requestId)
+	var audits []model.AuditLog
+	require.NoError(t, db.Where("request_id = ? AND category = ?", requestId, model.AuditCategoryOperation).Find(&audits).Error)
+	require.Len(t, audits, 1)
+	require.NotNil(t, audits[0].Other.Op)
+	assert.Equal(t, "contribution.submit", audits[0].Other.Op.Action)
+	assert.NotContains(t, fmt.Sprint(audits[0].Other.Op.Params), submittedKey)
+}
+
+// A key that failed a previous check but is still present in the host channel is
+// re-enabled rather than appended a second time.
+func TestContributionSubmitReenablesAPooledButDisabledKey(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	const submittedKey = "sk-contribution-reenabled"
+	require.NoError(t, model.AppendOrEnableChannelKey(hostChannelId, submittedKey))
+	require.NoError(t, model.SetChannelKeyStatus(hostChannelId, submittedKey, common.ChannelStatusAutoDisabled, model.ContributionReasonUpstreamUnauthorized))
+
+	response := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
+		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, submittedKey)))
+	require.Equal(t, true, response["success"], "body: %+v", response)
+
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled\n"+submittedKey, channel.Key)
+	assert.Equal(t, common.ChannelStatusEnabled, channel.GetMultiKeyStatus(1))
+}
+
+// Fingerprints are first-come-first-served: resubmitting a key that already has a
+// record - by this user or any other - must not touch the host channel again.
+func TestContributionSubmitRejectsAlreadySubmittedKey(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	const submittedKey = "sk-contribution-first-come"
+	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
+		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, submittedKey)))["success"])
+
+	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_fingerprint_taken", response["code"])
+	assert.NotContains(t, recorder.Body.String(), submittedKey)
+
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled\n"+submittedKey, channel.Key, "the channel content must not change")
+	assert.Equal(t, 2, channel.ChannelInfo.MultiKeySize)
+
+	var stored int64
+	require.NoError(t, db.Model(&model.Contribution{}).Count(&stored).Error)
+	assert.EqualValues(t, 1, stored)
+}
+
+// A second key of a channel type the user already contributes to is still
+// accepted into the pool, but it is marked as a redundant reward.
+func TestContributionSubmitAcceptsRedundantKeyWithoutReward(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	first := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
+		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, "sk-contribution-first")))
+	require.Equal(t, true, first["success"], "body: %+v", first)
+	assert.Equal(t, false, contributionDataOf(t, first)["redundant"])
+
+	_, response := submitContribution(t, handler, token, 1, "sk-contribution-second", true)
+	data := contributionDataOf(t, response)
+
+	assert.Equal(t, true, data["redundant"])
+	assert.Nil(t, data["reward"])
+
+	var stored []model.Contribution
+	require.NoError(t, db.Order("id").Find(&stored).Error)
+	require.Len(t, stored, 2)
+	assert.True(t, stored[0].RewardGranted)
+	assert.False(t, stored[1].RewardGranted, "the redundant contribution is marked on the record")
+
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled\nsk-contribution-first\nsk-contribution-second", channel.Key)
+}
+
+// The balance probe alone is not the validation: a key whose balance endpoint
+// answers but whose inference call fails is refused and never pooled.
+func TestContributionSubmitRequiresAWorkingInference(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	upstream.rejectInferenceWith(http.StatusUnauthorized)
+	handler := newContributionCatalogTestRouter()
+	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	recorder, response := submitContribution(t, handler, token, 1, "sk-balance-only", true)
+
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_key_invalid", response["code"])
+	assert.NotContains(t, recorder.Body.String(), "sk-balance-only")
+
+	balanceRequests, inferenceCalls := upstream.calls()
+	assert.GreaterOrEqual(t, balanceRequests, 1, "the balance probe ran first")
+	assert.Equal(t, 1, inferenceCalls, "the inference validation is the second gate")
+
+	channel, err := model.GetChannelById(hostChannelId, true)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-host-pooled", channel.Key, "a rejected key is never pooled")
+	var stored int64
+	require.NoError(t, db.Model(&model.Contribution{}).Count(&stored).Error)
+	assert.Zero(t, stored)
+}
+
+// A rejected key costs an upstream call, so three consecutive failures put the
+// user in a ten minute cooldown that is refused without touching the upstream.
+func TestContributionSubmitCoolsDownAfterRepeatedValidationFailures(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	upstream.rejectBalanceWith(http.StatusUnauthorized)
+	handler := newContributionCatalogTestRouter()
+	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	for attempt := range 3 {
+		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-cooled-down-%d", attempt), true)
+		assert.Equal(t, false, response["success"])
+		assert.Equal(t, "contribution_key_invalid", response["code"], "attempt %d", attempt)
+	}
+
+	balanceRequests, _ := upstream.calls()
+	require.EqualValues(t, 3, balanceRequests)
+
+	_, response := submitContribution(t, handler, token, 1, "sk-cooled-down-4", true)
+	assert.Equal(t, false, response["success"])
+	assert.Equal(t, "contribution_rate_limited", response["code"])
+	retryAfter, ok := response["retry_after_seconds"].(float64)
+	require.True(t, ok, "the refusal must tell the user how long to wait")
+	assert.Greater(t, retryAfter, float64(0))
+	assert.LessOrEqual(t, retryAfter, float64(600))
+
+	cooled, _ := upstream.calls()
+	assert.EqualValues(t, balanceRequests, cooled, "the cooldown short-circuits before any upstream call")
+}
+
+// A successful validation clears the failure counter, so failures that are not
+// consecutive never accumulate into a cooldown.
+func TestContributionSubmitSuccessClearsFailureCounter(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	upstream := newContributionSubmitUpstream(t)
+	handler := newContributionCatalogTestRouter()
+	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+
+	upstream.rejectBalanceWith(http.StatusUnauthorized)
+	for attempt := range 2 {
+		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-flaky-%d", attempt), true)
+		require.Equal(t, "contribution_key_invalid", response["code"])
+	}
+
+	upstream.rejectBalanceWith(0)
+	_, response := submitContribution(t, handler, token, 1, "sk-flaky-recovered", true)
+	require.Equal(t, true, response["success"], "body: %+v", response)
+
+	upstream.rejectBalanceWith(http.StatusUnauthorized)
+	for attempt := range 2 {
+		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-flaky-again-%d", attempt), true)
+		assert.Equal(t, "contribution_key_invalid", response["code"], "the counter restarted after a success")
 	}
 }

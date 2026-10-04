@@ -209,6 +209,9 @@ func SetApiRouter(router *gin.Engine) {
 		contributionRoute.Use(middleware.UserAuth())
 		{
 			contributionRoute.GET("/catalog", middleware.DisableCache(), controller.GetContributionCatalog)
+			// Submitting a key is a sensitive write: it validates against a
+			// third-party upstream and pools the credential for everyone.
+			contributionRoute.POST("/submit", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("contribution-submit"), middleware.DisableCache(), controller.SubmitContribution)
 		}
 		contributionAdminRoute := apiRouter.Group("/contribution/admin")
 		contributionAdminRoute.Use(middleware.RootAuth())
