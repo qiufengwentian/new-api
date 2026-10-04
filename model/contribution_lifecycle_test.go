@@ -691,3 +691,226 @@ func TestContributionReleaseStaysRetryableWhenTheKeyCannotBeDisabled(t *testing.
 	assert.Empty(t, mine[0].Reason)
 	assert.Zero(t, mine[0].ReasonTime)
 }
+
+// TestContributionRevokeCompletesWhenTheKeyIsAlreadyGone pins the failure-tolerant
+// half of the revoke contract: an administrator may have reclaimed the contributed
+// key with the existing cleanup action before its owner withdrew it. The
+// key-disabling step is then already moot and must be skipped, while the rest of the
+// release - cancelling the reward and freeing the fingerprint - still runs.
+func TestContributionRevokeCompletesWhenTheKeyIsAlreadyGone(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	plan := &SubscriptionPlan{
+		Id:               9601,
+		Title:            "Contribution reward",
+		Enabled:          true,
+		DurationUnit:     SubscriptionDurationMonth,
+		DurationValue:    1,
+		TotalAmount:      1000,
+		QuotaResetPeriod: SubscriptionResetDaily,
+	}
+	require.NoError(t, DB.Create(plan).Error)
+
+	contributor := &User{
+		Id:          601,
+		Username:    "contribution-reclaimed",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(contributor).Error)
+
+	// The host channel no longer carries the contributed key: an administrator
+	// reclaimed it, so nothing in the channel resolves the record's fingerprint.
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+
+	const reclaimedKey = "sk-contribution-reclaimed"
+	contribution := &Contribution{
+		UserId:         contributor.Id,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), reclaimedKey)),
+		KeyMask:        MaskContributionKey(reclaimedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+	subscription, err := GrantContributionReward(contribution, plan.Id)
+	require.NoError(t, err)
+	require.NotNil(t, subscription)
+	fingerprint := *contribution.KeyFingerprint
+
+	// Nothing in the channel resolves the record's fingerprint any more, which is
+	// exactly how the caller knows to hand the release an empty plaintext key.
+	pooled := reloadContributionChannel(t, host.Id)
+	_, found := ResolveContributedKey(contribution, pooled)
+	assert.False(t, found, "a reclaimed key is no longer resolvable from the record's fingerprint")
+
+	require.NoError(t, ReleaseContribution(contribution, "", ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+
+	_, err = GetContributionByFingerprint(fingerprint)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound, "the fingerprint is freed even though the key was already gone")
+	var stored Contribution
+	require.NoError(t, DB.Where("id = ?", contribution.Id).First(&stored).Error)
+	assert.Equal(t, ContributionStatusRevoked, stored.Status)
+	assert.Equal(t, ContributionReasonUserRevoked, stored.Reason)
+	assert.NotZero(t, stored.ReasonTime)
+	assert.Nil(t, stored.KeyFingerprint)
+
+	cancelled, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", cancelled.Status, "the reward is cancelled even though the key was already gone")
+
+	active, err := GetAllActiveContributions()
+	require.NoError(t, err)
+	assert.Empty(t, active)
+}
+
+// TestContributionRevokeIsTerminal is the model-layer seam of the user-initiated
+// revoke: one call disables the key in the host channel, cancels the reward and
+// frees the fingerprint, and the same key then re-enters the pool through the
+// re-enable branch instead of being appended a second time.
+func TestContributionRevokeIsTerminal(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	plan := &SubscriptionPlan{
+		Id:               9701,
+		Title:            "Contribution reward",
+		Enabled:          true,
+		DurationUnit:     SubscriptionDurationMonth,
+		DurationValue:    1,
+		TotalAmount:      1000,
+		QuotaResetPeriod: SubscriptionResetDaily,
+	}
+	require.NoError(t, DB.Create(plan).Error)
+
+	contributor := &User{
+		Id:          701,
+		Username:    "contribution-withdrawn",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(contributor).Error)
+
+	const revokedKey = "sk-contribution-withdrawn"
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, revokedKey))
+
+	contribution := &Contribution{
+		UserId:         contributor.Id,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), revokedKey)),
+		KeyMask:        MaskContributionKey(revokedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+	subscription, err := GrantContributionReward(contribution, plan.Id)
+	require.NoError(t, err)
+	fingerprint := *contribution.KeyFingerprint
+
+	// The plaintext key is recovered through the shared resolver the liveness probe
+	// and the revoke endpoint both call, never through the key's index.
+	pooled := reloadContributionChannel(t, host.Id)
+	resolved, found := ResolveContributedKey(contribution, pooled)
+	require.True(t, found)
+	assert.Equal(t, revokedKey, resolved)
+
+	require.NoError(t, ReleaseContribution(contribution, resolved, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+
+	// The record survives with the terminal status, the machine-readable reason and a
+	// NULL fingerprint: the shape that frees the key for a later submission.
+	var stored Contribution
+	require.NoError(t, DB.Where("id = ?", contribution.Id).First(&stored).Error)
+	assert.Equal(t, ContributionStatusRevoked, stored.Status)
+	assert.Equal(t, ContributionReasonUserRevoked, stored.Reason)
+	assert.NotZero(t, stored.ReasonTime)
+	assert.Nil(t, stored.KeyFingerprint)
+	_, err = GetContributionByFingerprint(fingerprint)
+	require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+	active, err := GetAllActiveContributions()
+	require.NoError(t, err)
+	assert.Empty(t, active, "a revoked contribution is no longer probed")
+
+	// The key is still physically present - revoke never deletes it - but it is
+	// auto-disabled with the reason recorded against its index, and polling never
+	// selects it again.
+	channel := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, "host-key-one\n"+revokedKey, channel.Key, "revoke never deletes the key")
+	assert.Equal(t, common.ChannelStatusAutoDisabled, channel.GetMultiKeyStatus(1))
+	assert.Equal(t, ContributionReasonUserRevoked, channel.ChannelInfo.MultiKeyDisabledReason[1])
+	for pick := range 3 {
+		key, _, pickErr := channel.GetNextEnabledKey()
+		require.Nil(t, pickErr, "pick %d", pick)
+		assert.Equal(t, "host-key-one", key, "a revoked key must never be selected")
+	}
+
+	// The reward is cancelled, not deleted, and its granted quota is not clawed back.
+	cancelled, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", cancelled.Status)
+	assert.Less(t, cancelled.EndTime, subscription.EndTime)
+	assert.EqualValues(t, subscription.AmountTotal, cancelled.AmountTotal)
+
+	// The freed fingerprint can be claimed by anyone.
+	resubmitted := &Contribution{
+		UserId:         702,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(fingerprint),
+		KeyMask:        MaskContributionKey(revokedKey),
+		Status:         ContributionStatusActive,
+	}
+	require.NoError(t, resubmitted.Create(), "a revoked fingerprint is free again")
+
+	// Resubmitting the same key re-enables it in place: the key list does not grow a
+	// second copy of it.
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, revokedKey))
+	reclaimed := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, "host-key-one\n"+revokedKey, reclaimed.Key, "re-enabling must not append a duplicate key")
+	assert.Equal(t, 2, reclaimed.ChannelInfo.MultiKeySize)
+	assert.Equal(t, common.ChannelStatusEnabled, reclaimed.GetMultiKeyStatus(1))
+	_, hasReason := reclaimed.ChannelInfo.MultiKeyDisabledReason[1]
+	assert.False(t, hasReason)
+	_, hasTime := reclaimed.ChannelInfo.MultiKeyDisabledTime[1]
+	assert.False(t, hasTime, "re-enabling clears the disable bookkeeping")
+	picked := make([]string, 0, 2)
+	for range 2 {
+		key, _, pickErr := reclaimed.GetNextEnabledKey()
+		require.Nil(t, pickErr)
+		picked = append(picked, key)
+	}
+	assert.ElementsMatch(t, []string{"host-key-one", revokedKey}, picked, "the re-enabled key is selectable again")
+
+	// A repeated revoke is a no-op. The key is re-enabled and the subscription's end
+	// time is moved to a sentinel first, so a second release would be visible as a
+	// second disable and a second cancellation instead of passing by construction.
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", subscription.Id).
+		Update("end_time", int64(12345)).Error)
+	require.NoError(t, ReleaseContribution(contribution, revokedKey, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+
+	untouched := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, common.ChannelStatusEnabled, untouched.GetMultiKeyStatus(1), "a repeated revoke must not disable the key again")
+	stillCancelled, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.EqualValues(t, 12345, stillCancelled.EndTime, "a repeated revoke must not cancel the subscription again")
+
+	// A no-op leaves the caller's struct untouched, which is how the endpoint tells
+	// "I performed the transition" from "somebody already did" before it audits and
+	// notifies. The struct is reset to the stale value a caller would have read.
+	contribution.Status = ContributionStatusActive
+	require.NoError(t, ReleaseContribution(contribution, revokedKey, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
+	assert.Equal(t, ContributionStatusActive, contribution.Status, "a no-op must not report a transition it did not perform")
+}

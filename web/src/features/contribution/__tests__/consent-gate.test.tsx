@@ -81,6 +81,7 @@ function acceptedSubmission(
         reason_time: 0,
         key_mask: '************',
         subscription_id: 0,
+        subscription_status: '',
         reward_granted: true,
         created_time: 0,
       },

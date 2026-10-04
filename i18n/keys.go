@@ -341,8 +341,10 @@ const (
 // contributor reads on the contributed-key list is the machine-readable reason code
 // rendered by the frontend, not these messages.
 const (
-	MsgContributionKeyDeadTitle   = "contribution.key_dead_title"
-	MsgContributionKeyDeadContent = "contribution.key_dead_content"
+	MsgContributionKeyDeadTitle      = "contribution.key_dead_title"
+	MsgContributionKeyDeadContent    = "contribution.key_dead_content"
+	MsgContributionKeyRevokedTitle   = "contribution.key_revoked_title"
+	MsgContributionKeyRevokedContent = "contribution.key_revoked_content"
 )
 
 // Custom OAuth provider related messages

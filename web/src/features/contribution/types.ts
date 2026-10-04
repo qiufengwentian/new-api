@@ -62,6 +62,8 @@ export interface ContributionSummary {
   reason_time: number
   key_mask: string
   subscription_id: number
+  /** The reward instance's status, or an empty string when the record granted none. */
+  subscription_status: string
   reward_granted: boolean
   created_time: number
 }
@@ -93,3 +95,15 @@ export function getContributionSubmitSchema(t: TFunction) {
 export type ContributionSubmitValues = z.infer<
   ReturnType<typeof getContributionSubmitSchema>
 >
+
+/** What the revoke endpoint returns: the record's fresh, terminal summary. */
+export interface ContributionRevokeData {
+  contribution: ContributionSummary
+}
+
+export interface ContributionRevokeResponse {
+  success: boolean
+  message?: string
+  code?: string
+  data?: ContributionRevokeData
+}

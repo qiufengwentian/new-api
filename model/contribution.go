@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -47,6 +48,37 @@ const (
 // only has to identify a key uniquely within one host channel configuration.
 func ContributionKeyFingerprint(hostBaseURL string, key string) string {
 	return common.GenerateHMAC(hostBaseURL + "\n" + key)
+}
+
+// ResolveContributedKey recovers the plaintext key a contribution owns inside its
+// host channel by recomputing the fingerprint over each stored key. The record is
+// addressed by fingerprint and never by index, because removing one key renumbers
+// every later key.
+//
+// It is the one implementation shared by the liveness probe and the user-facing
+// revoke endpoint, so both agree on which stored key a record owns. A false result
+// means the key is no longer in the channel - an administrator reclaimed it with the
+// existing cleanup action, or the host channel base URL changed - and the caller
+// must not invent one: the release pipeline accepts an empty key and skips the
+// already moot key-disabling step.
+func ResolveContributedKey(contribution *Contribution, hostChannel *Channel) (string, bool) {
+	if contribution == nil || hostChannel == nil {
+		return "", false
+	}
+	if contribution.KeyFingerprint == nil || *contribution.KeyFingerprint == "" {
+		return "", false
+	}
+	baseURL := hostChannel.GetBaseURL()
+	for _, storedKey := range hostChannel.GetKeys() {
+		storedKey = strings.TrimSpace(storedKey)
+		if storedKey == "" {
+			continue
+		}
+		if ContributionKeyFingerprint(baseURL, storedKey) == *contribution.KeyFingerprint {
+			return storedKey, true
+		}
+	}
+	return "", false
 }
 
 // IsContributionKeyDead reports whether a probe outcome is fatal for a
@@ -129,6 +161,21 @@ func GetContributionByFingerprint(fingerprint string) (*Contribution, error) {
 	}
 	var contribution Contribution
 	if err := DB.Where("key_fingerprint = ?", fingerprint).First(&contribution).Error; err != nil {
+		return nil, err
+	}
+	return &contribution, nil
+}
+
+// GetContributionById returns one contribution record in any status.
+// gorm.ErrRecordNotFound means the id does not exist. Ownership is the caller's
+// check: the user-facing withdrawal answers a foreign record exactly like a missing
+// one, so that endpoint cannot reveal whose contribution exists.
+func GetContributionById(id int) (*Contribution, error) {
+	if id <= 0 {
+		return nil, errors.New("invalid contribution id")
+	}
+	var contribution Contribution
+	if err := DB.Where("id = ?", id).First(&contribution).Error; err != nil {
 		return nil, err
 	}
 	return &contribution, nil
@@ -326,7 +373,8 @@ func HasActiveContributions() bool {
 //
 // plainKey is the plaintext key the caller resolved from the host channel's key
 // list; death and revoke are both addressed by key string because deleting one
-// key renumbers the indexes of every later key.
+// key renumbers the indexes of every later key. An empty plainKey means the key is
+// already gone from the channel, so the key-disabling step is skipped as moot.
 func ReleaseContribution(contribution *Contribution, plainKey string, status string, reason string, releaseFingerprint bool) error {
 	if contribution == nil || contribution.Id <= 0 {
 		return errors.New("invalid contribution")
@@ -342,7 +390,13 @@ func ReleaseContribution(contribution *Contribution, plainKey string, status str
 		return nil
 	}
 
-	if err := SetChannelKeyStatus(contribution.HostChannelId, plainKey, common.ChannelStatusAutoDisabled, reason); err != nil {
+	if plainKey == "" {
+		// An administrator already reclaimed the key with the existing cleanup
+		// action, so there is nothing left to disable: the caller resolved no
+		// plaintext key. Skipping is not a failure - the reward still has to be
+		// cancelled and the fingerprint still has to be freed.
+		common.SysLog(fmt.Sprintf("contribution %d: its key is already gone from channel %d, continuing its release", contribution.Id, contribution.HostChannelId))
+	} else if err := SetChannelKeyStatus(contribution.HostChannelId, plainKey, common.ChannelStatusAutoDisabled, reason); err != nil {
 		if !errors.Is(err, ErrChannelKeyNotFound) && !errors.Is(err, gorm.ErrRecordNotFound) {
 			common.SysError(fmt.Sprintf("failed to auto-disable the key of contribution %d in channel %d: %v", contribution.Id, contribution.HostChannelId, err))
 			return err

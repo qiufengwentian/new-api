@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "上流キーを送信しました",
     "Users can pick this upstream while it is enabled.": "有効にするとユーザーがこの上流を選べます。",
     "While off, no upstream is offered and the user page stays empty.": "オフの間は上流を提示せず、ユーザーページは空のままです。",
-    "You must accept the statement before submitting": "送信する前に説明に同意してください"
+    "You must accept the statement before submitting": "送信する前に説明に同意してください",
+    "Revoke contribution": "提供を取り消す",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "取り消すと、このキーは共有チャネルで直ちに無効化され、対応する報酬サブスクリプションもキャンセルされます。取り消しは元に戻せませんが、このキーは後で再度提供できます。",
+    "Contribution revoked": "提供を取り消しました",
+    "Failed to revoke the contribution": "提供の取り消しに失敗しました",
+    "This contribution no longer exists.": "この提供は存在しません。",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "この提供は上流がキーを拒否したため終了しており、取り消せません。",
+    "Dead": "無効",
+    "Revoked": "撤回済み",
+    "The upstream rejected this key": "上流がこのキーを拒否しました",
+    "You revoked this contribution": "この提供を取り消しました",
+    "Revoked a contributed upstream key": "提供された上流キーを取り消しました"
   }
 }

@@ -64,3 +64,44 @@ export function contributionSubmitRejectionText(response: {
   }
   return response.message ?? ''
 }
+
+// Rejection codes returned by controller/contribution.go for POST
+// /api/contribution/revoke. The values are i18n keys, so they must be rendered
+// through a translation function, never shown raw.
+export const CONTRIBUTION_REVOKE_REJECTION_MESSAGES: Record<string, string> = {
+  contribution_not_found: 'This contribution no longer exists.',
+  contribution_dead_is_final:
+    'This contribution was ended because the upstream rejected the key, so it cannot be revoked.',
+}
+
+/**
+ * Resolves the copy for a refused withdrawal: localized text for a known
+ * rejection code, otherwise the readable server message.
+ */
+export function contributionRevokeRejectionText(response: {
+  code?: string
+  message?: string
+}): string {
+  if (response.code) {
+    const key = CONTRIBUTION_REVOKE_REJECTION_MESSAGES[response.code]
+    if (key) {
+      return i18next.t(key)
+    }
+  }
+  return response.message ?? ''
+}
+
+// Machine status codes of a contribution record. The values are i18n keys, so the
+// list built on top of them stays renderable in every language.
+export const CONTRIBUTION_STATUS_LABELS: Record<string, string> = {
+  active: 'Active',
+  dead: 'Dead',
+  revoked: 'Revoked',
+}
+
+// Machine terminal reasons of a contribution record. The values are i18n keys,
+// rendered as the reason a record is no longer active.
+export const CONTRIBUTION_REASON_LABELS: Record<string, string> = {
+  upstream_unauthorized: 'The upstream rejected this key',
+  user_revoked: 'You revoked this contribution',
+}

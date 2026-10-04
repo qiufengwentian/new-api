@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "上游 Key 提交成功",
     "Users can pick this upstream while it is enabled.": "啟用後使用者即可選擇這個上游。",
     "While off, no upstream is offered and the user page stays empty.": "關閉後不再提供任何上游，使用者頁面保持為空。",
-    "You must accept the statement before submitting": "提交前必須同意上述說明"
+    "You must accept the statement before submitting": "提交前必須同意上述說明",
+    "Revoke contribution": "撤回貢獻",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "撤回會立即在共享渠道中停用這把 Key，並取消對應的回饋訂閱。撤回後無法恢復，但你之後可以重新提交這把 Key。",
+    "Contribution revoked": "貢獻已撤回",
+    "Failed to revoke the contribution": "撤回貢獻失敗",
+    "This contribution no longer exists.": "該貢獻已不存在。",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "該貢獻已因上游拒絕這把 Key 而終止，無法撤回。",
+    "Dead": "已判死",
+    "Revoked": "已撤回",
+    "The upstream rejected this key": "上游拒絕了這把 Key",
+    "You revoked this contribution": "你撤回了這條貢獻",
+    "Revoked a contributed upstream key": "撤回了一把貢獻的上游 Key"
   }
 }

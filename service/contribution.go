@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
@@ -71,7 +70,7 @@ func ProbeContributionLiveness(ctx context.Context) error {
 			common.SysError(fmt.Sprintf("contribution %d: host channel %d is unreadable, leaving it active: %v", contribution.Id, contribution.HostChannelId, err))
 			continue
 		}
-		key, found := resolveContributedKey(contribution, hostChannel)
+		key, found := model.ResolveContributedKey(contribution, hostChannel)
 		if !found {
 			common.SysError(fmt.Sprintf("contribution %d: its key is no longer present in host channel %d, leaving it active", contribution.Id, contribution.HostChannelId))
 			continue
@@ -101,27 +100,6 @@ func ProbeContributionLiveness(ctx context.Context) error {
 		notifyContributionContributor(contribution)
 	}
 	return nil
-}
-
-// resolveContributedKey recovers the plaintext key a contribution owns inside its
-// host channel by recomputing the fingerprint over each stored key. The record is
-// addressed by fingerprint and never by index, because removing one key renumbers
-// every later key.
-func resolveContributedKey(contribution *model.Contribution, hostChannel *model.Channel) (string, bool) {
-	if contribution.KeyFingerprint == nil || *contribution.KeyFingerprint == "" {
-		return "", false
-	}
-	baseURL := hostChannel.GetBaseURL()
-	for _, storedKey := range hostChannel.GetKeys() {
-		storedKey = strings.TrimSpace(storedKey)
-		if storedKey == "" {
-			continue
-		}
-		if model.ContributionKeyFingerprint(baseURL, storedKey) == *contribution.KeyFingerprint {
-			return storedKey, true
-		}
-	}
-	return "", false
 }
 
 // recordContributionKillAudit writes the audit row of one death. The contribution,

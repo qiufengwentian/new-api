@@ -6939,6 +6939,17 @@
     "Upstream key submitted successfully": "Clé amont soumise avec succès",
     "Users can pick this upstream while it is enabled.": "Les utilisateurs peuvent choisir cet amont lorsqu'il est activé.",
     "While off, no upstream is offered and the user page stays empty.": "Lorsqu'il est désactivé, aucun amont n'est proposé et la page utilisateur reste vide.",
-    "You must accept the statement before submitting": "Vous devez accepter la déclaration avant de soumettre"
+    "You must accept the statement before submitting": "Vous devez accepter la déclaration avant de soumettre",
+    "Revoke contribution": "Révoquer la contribution",
+    "Revoking disables this key in the shared channel and cancels its reward subscription immediately. This cannot be undone; you can contribute the key again later.": "La révocation désactive immédiatement cette clé dans le canal partagé et annule l'abonnement de récompense correspondant. Cette action est irréversible ; vous pourrez soumettre à nouveau cette clé plus tard.",
+    "Contribution revoked": "Contribution révoquée",
+    "Failed to revoke the contribution": "Échec de la révocation de la contribution",
+    "This contribution no longer exists.": "Cette contribution n'existe plus.",
+    "This contribution was ended because the upstream rejected the key, so it cannot be revoked.": "Cette contribution a pris fin parce que l'amont a rejeté la clé ; elle ne peut pas être révoquée.",
+    "Dead": "Morte",
+    "Revoked": "Révoquée",
+    "The upstream rejected this key": "L'amont a rejeté cette clé",
+    "You revoked this contribution": "Vous avez révoqué cette contribution",
+    "Revoked a contributed upstream key": "Clé amont contribuée révoquée"
   }
 }
