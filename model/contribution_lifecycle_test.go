@@ -1,14 +1,19 @@
 package model
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/setting/contribution_setting"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // The contribution liveness predicate is the only death criterion of the whole
@@ -299,4 +304,178 @@ func TestContributionCatalogAllowsAtMostOneEnabledEntryPerChannelType(t *testing
 	require.True(t, found)
 	assert.Equal(t, "OpenAI", entry.Name)
 	assert.Equal(t, 2, len(contribution_setting.AllEntries()))
+}
+
+// openContributionRewardTestDB hands one test its own shared-cache in-memory
+// database with a real connection pool.
+//
+// A reward grant runs AdminBindSubscription's transaction, which also reads the
+// database clock through DB while that transaction holds its connection. The
+// package harness keeps exactly one connection (SetMaxOpenConns(1) on a private
+// ":memory:" database), where that read would block forever, so the grant needs
+// the shared-cache fixture subscription_auth_test.go already uses.
+func openContributionRewardTestDB(t *testing.T) {
+	t.Helper()
+	previousDB, previousLogDB := DB, LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
+	testDB, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	require.NoError(t, err)
+	DB, LOG_DB = testDB, testDB
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	require.NoError(t, testDB.AutoMigrate(
+		&User{}, &Channel{}, &Ability{}, &SubscriptionPlan{}, &UserSubscription{}, &Contribution{},
+	))
+	sqlDB, err := testDB.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(4)
+	t.Cleanup(func() {
+		DB, LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		_ = sqlDB.Close()
+		InitChannelCache()
+	})
+}
+
+// TestContributionRewardGrantLifecycle is the model-layer main seam of the
+// reward: in one place it asserts both side effects of a successful grant - the
+// contributed key is pooled in the host channel and selectable there, and the
+// contributor holds a subscription built from the catalog entry's plan - and then
+// the "one upstream counts once" rule and the reset schedule the subscription
+// inherits from its plan.
+func TestContributionRewardGrantLifecycle(t *testing.T) {
+	openContributionRewardTestDB(t)
+	previousCache := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = previousCache })
+
+	plan := &SubscriptionPlan{
+		Id:               9401,
+		Title:            "Contribution reward",
+		Enabled:          true,
+		DurationUnit:     SubscriptionDurationMonth,
+		DurationValue:    1,
+		TotalAmount:      1000,
+		QuotaResetPeriod: SubscriptionResetDaily,
+	}
+	require.NoError(t, DB.Create(plan).Error)
+
+	// A reward grant locks the contributor's user row, so the contributor must
+	// exist before an instance can be issued.
+	contributor := &User{
+		Id:          201,
+		Username:    "contribution-contributor",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(contributor).Error)
+
+	const contributedKey = "sk-contribution-rewarded"
+	host := seedContributionHostChannel(t, "host-key-one", 1)
+	require.NoError(t, AppendOrEnableChannelKey(host.Id, contributedKey))
+
+	contribution := &Contribution{
+		UserId:         contributor.Id,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
+		KeyMask:        MaskContributionKey(contributedKey),
+		Status:         ContributionStatusActive,
+		RewardGranted:  true,
+	}
+	require.NoError(t, contribution.Create())
+
+	subscription, err := GrantContributionReward(contribution, plan.Id)
+	require.NoError(t, err)
+	require.NotNil(t, subscription)
+
+	// Side effect 1: the contributed key is pooled, enabled, and therefore selected
+	// by relay traffic. Polling reaches every enabled key in order, so the second
+	// pick proves the contributed key really became selectable.
+	channel := reloadContributionChannel(t, host.Id)
+	assert.Equal(t, "host-key-one\n"+contributedKey, channel.Key)
+	assert.Equal(t, common.ChannelStatusEnabled, channel.GetMultiKeyStatus(1))
+	first, _, firstErr := channel.GetNextEnabledKey()
+	require.Nil(t, firstErr)
+	assert.Equal(t, "host-key-one", first)
+	second, secondIndex, secondErr := channel.GetNextEnabledKey()
+	require.Nil(t, secondErr)
+	assert.Equal(t, contributedKey, second)
+	assert.Equal(t, 1, secondIndex)
+
+	// Side effect 2: the contributor holds the plan's subscription, and only that.
+	stored, err := GetUserSubscriptionById(subscription.Id)
+	require.NoError(t, err)
+	assert.Equal(t, contributor.Id, stored.UserId)
+	assert.Equal(t, plan.Id, stored.PlanId)
+	assert.EqualValues(t, plan.TotalAmount, stored.AmountTotal)
+	assert.EqualValues(t, 0, stored.AmountUsed)
+	assert.Equal(t, "active", stored.Status)
+	assert.Equal(t, "contribution", stored.Source, "a reward stays distinguishable from an admin grant")
+
+	var record Contribution
+	require.NoError(t, DB.Where("id = ?", contribution.Id).First(&record).Error)
+	assert.Equal(t, subscription.Id, record.SubscriptionId, "the record points at the instance it produced")
+
+	// Granting again for the same record is a no-op: idempotency lives on the record.
+	again, err := GrantContributionReward(&record, plan.Id)
+	require.NoError(t, err)
+	assert.Equal(t, subscription.Id, again.Id)
+
+	// "One upstream counts once": a second contribution of the same channel type is
+	// redundant and grants no second reward.
+	hasActive, err := HasActiveContributionForType(contributor.Id, 1, 0)
+	require.NoError(t, err)
+	assert.True(t, hasActive, "the channel type already holds an active contribution")
+
+	redundant := &Contribution{
+		UserId:         contributor.Id,
+		ChannelType:    1,
+		HostChannelId:  host.Id,
+		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), "sk-contribution-redundant")),
+		KeyMask:        MaskContributionKey("sk-contribution-redundant"),
+		Status:         ContributionStatusActive,
+		RewardGranted:  false,
+	}
+	require.NoError(t, redundant.Create())
+	assert.Zero(t, redundant.SubscriptionId)
+	var subscriptionCount int64
+	require.NoError(t, DB.Model(&UserSubscription{}).
+		Where("user_id = ?", contributor.Id).Count(&subscriptionCount).Error)
+	assert.EqualValues(t, 1, subscriptionCount, "the same channel type never grants a second reward")
+
+	// The daily rollover belongs to the plan and the existing reset task
+	// (service/subscription_reset_task.go): the granted instance inherits the
+	// plan's schedule instead of a day-rollover invented by this feature. Asserting
+	// the boundary itself - not a re-derivation of the formula - keeps that honest.
+	require.NotZero(t, stored.NextResetTime)
+	assert.Greater(t, stored.NextResetTime, stored.StartTime)
+	assert.LessOrEqual(t, stored.NextResetTime-stored.StartTime, int64(24*time.Hour))
+	next := time.Unix(stored.NextResetTime, 0)
+	assert.Equal(t, 0, next.Hour())
+	assert.Equal(t, 0, next.Minute())
+	assert.Equal(t, 0, next.Second())
+	assert.Equal(t, stored.StartTime, stored.LastResetTime)
+
+	// The rollover itself belongs to the existing machine, and the granted
+	// instance participates in it: an instance that is due is reset by
+	// ResetDueSubscriptions, not by anything this feature added.
+	twoDaysAgo := stored.StartTime - 2*24*3600
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", stored.Id).
+		Updates(map[string]any{
+			"amount_used":     40,
+			"last_reset_time": twoDaysAgo,
+			"next_reset_time": twoDaysAgo + 24*3600,
+		}).Error)
+	resetCount, err := ResetDueSubscriptions(10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, resetCount)
+	rolled, err := GetUserSubscriptionById(stored.Id)
+	require.NoError(t, err)
+	assert.Zero(t, rolled.AmountUsed, "the existing reset machine performs the daily rollover")
+	assert.Greater(t, rolled.LastResetTime, twoDaysAgo, "the reset moved the base past the elapsed period")
+	assert.Greater(t, rolled.NextResetTime, common.GetTimestamp(), "the rollover scheduled the next daily reset")
 }

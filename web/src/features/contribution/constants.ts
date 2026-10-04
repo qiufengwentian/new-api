@@ -33,6 +33,8 @@ export const CONTRIBUTION_SUBMIT_REJECTION_MESSAGES: Record<string, string> = {
     'This upstream key is already in the shared pool.',
   contribution_pooling_failed:
     'The upstream key could not be added to the shared pool. Please contact your administrator.',
+  contribution_reward_failed:
+    'The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.',
 }
 
 // The cooldown refusal carries how long the user has to wait, so it is rendered

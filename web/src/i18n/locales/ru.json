@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "Не удалось удалить запись",
     "Failed to submit the upstream key": "Не удалось отправить вышестоящий ключ",
     "Failed to update contribution entry": "Не удалось обновить запись",
+    "Granted the contribution reward": "Начислено вознаграждение за вклад",
     "Hint shown inside the key input on the user page.": "Подсказка в поле ключа на странице пользователя.",
     "Host Channel": "Канал-носитель",
     "Host channel is required": "Укажите канал-носитель",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "Выберите многоключевой канал",
     "Select a subscription plan": "Выберите план подписки",
     "Shown to users so they can create an upstream account first.": "Показывается пользователям, чтобы они сначала создали аккаунт у источника.",
+    "Submitted a contributed upstream key": "Отправлен ключ внешнего сервиса",
     "Subscription Plan": "План подписки",
     "Subscription plan is required": "Укажите план подписки",
     "Subscription plan not found": "План подписки не найден",
     "The administrator has not opened any upstream for contribution yet.": "Администратор пока не открыл ни одного источника для передачи ключей.",
     "The multi-key channel that receives contributed keys.": "Многоключевой канал, принимающий переданные ключи.",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "Не удалось добавить вышестоящий ключ в общий пул. Обратитесь к администратору.",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "Вклад записан, но подписка-вознаграждение не была выдана. Обратитесь к администратору.",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "Этот вышестоящий сервис уже даёт вам награду, поэтому новый ключ принят как избыточный.",
     "This upstream is not open for contribution.": "Этот вышестоящий сервис не открыт для приёма ключей.",
     "This upstream key failed validation. Check the key and that it still has quota.": "Этот вышестоящий ключ не прошёл проверку. Проверьте ключ и наличие остатка.",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "Вышестоящий ключ успешно отправлен",
     "Users can pick this upstream while it is enabled.": "Пока запись включена, пользователи могут выбрать этот источник.",
     "While off, no upstream is offered and the user page stays empty.": "Когда выключено, источники не предлагаются, а страница пользователя остаётся пустой.",
-    "You must accept the statement before submitting": "Перед отправкой необходимо принять заявление",
-    "Your reward subscription will appear here once it is issued.": "Ваша подарочная подписка появится здесь после выдачи."
+    "You must accept the statement before submitting": "Перед отправкой необходимо принять заявление"
   }
 }

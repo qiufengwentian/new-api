@@ -164,7 +164,8 @@ it('clears the key input and shows the reward after a successful submit', async 
         plan_title: 'Pro plan',
         amount_total: 1000,
         amount_used: 250,
-        end_time: 0,
+        end_time: 1_800_000_000,
+        status: 'active',
       },
     })
   )
@@ -173,7 +174,13 @@ it('clears the key input and shows the reward after a successful submit', async 
   await fillAndSubmit()
 
   expect(await screen.findByText('Contribution submitted')).toBeInTheDocument()
+  // The reward reports what was actually granted: the channel type it was earned
+  // for, the plan, the quota split and the expiry, plus the subscription status.
+  expect(screen.getByText(/Channel Type/)).toBeInTheDocument()
   expect(screen.getByText(/Pro plan/)).toBeInTheDocument()
+  expect(screen.getByText(/250/)).toBeInTheDocument()
+  expect(screen.getByText(/Expires at/)).toBeInTheDocument()
+  expect(screen.getByText('Active')).toBeInTheDocument()
   expect(screen.getByLabelText('Upstream API Key')).toHaveValue('')
   expect(submitContribution).toHaveBeenCalledWith({
     channel_type: 1,
@@ -195,9 +202,10 @@ it('renders the redundant notice when the backend accepts a duplicate contributi
       'This upstream already grants you a reward, so the new key was accepted as redundant.'
     )
   ).toBeInTheDocument()
-  expect(
-    screen.getByText('Your reward subscription will appear here once it is issued.')
-  ).toBeInTheDocument()
+  // A redundant submission grants nothing, so no reward is rendered: the server
+  // sends reward = null and the page must not invent an instance.
+  expect(screen.queryByText('Reward')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Expires at/)).not.toBeInTheDocument()
 })
 
 it('keeps the key in the form when the submission is refused', async () => {
@@ -224,6 +232,16 @@ it('renders the cooldown wait time for a rate limited submission', () => {
   })
 
   expect(text).toContain('420')
+})
+
+// A contribution that was recorded but whose reward could not be issued fails
+// loudly: the user reads a localized reason instead of a successful response.
+it('localizes the reward grant failure', () => {
+  expect(
+    contributionSubmitRejectionText({ code: 'contribution_reward_failed' })
+  ).toBe(
+    'The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.'
+  )
 })
 
 it('falls back to the server message for an unknown rejection code', () => {

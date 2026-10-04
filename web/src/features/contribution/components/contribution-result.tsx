@@ -18,9 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { StatusBadge, type StatusVariant } from '@/components/status-badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { toIntlLocale } from '@/i18n/languages'
-import { formatNumber } from '@/lib/format'
+import { formatNumber, formatTimestamp } from '@/lib/format'
 
 import type { ContributionSubmitData } from '../types'
 
@@ -28,14 +29,34 @@ type ContributionResultProps = {
   result: ContributionSubmitData
 }
 
+// The reward is a plain subscription instance, so it borrows the subscription
+// vocabulary the wallet already renders instead of inventing a second one.
+const REWARD_STATUS_BADGES: Record<
+  string,
+  { labelKey: string; variant: StatusVariant }
+> = {
+  active: { labelKey: 'Active', variant: 'success' },
+  cancelled: { labelKey: 'Invalidated', variant: 'neutral' },
+}
+const REWARD_STATUS_FALLBACK: { labelKey: string; variant: StatusVariant } = {
+  labelKey: 'Expired',
+  variant: 'neutral',
+}
+
 /**
  * Confirms an accepted contribution. The key is only ever shown masked, and the
- * reward stays null until the administrator's plan is granted.
+ * reward reports exactly what was granted: the channel type it was earned for,
+ * the plan, the quota consumed and the expiry. A redundant submission renders no
+ * reward, because the server grants none.
  */
 export function ContributionResult(props: ContributionResultProps) {
   const { t, i18n } = useTranslation()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const contribution = props.result.contribution
+  const reward = props.result.reward
+  const rewardStatus = reward
+    ? (REWARD_STATUS_BADGES[reward.status] ?? REWARD_STATUS_FALLBACK)
+    : REWARD_STATUS_FALLBACK
 
   return (
     <Alert>
@@ -51,17 +72,29 @@ export function ContributionResult(props: ContributionResultProps) {
             )}
           </p>
         ) : null}
-        {props.result.reward ? (
-          <p>
-            {t('Reward')}: {props.result.reward.plan_title} (
-            {formatNumber(props.result.reward.amount_used, locale)} /{' '}
-            {formatNumber(props.result.reward.amount_total, locale)})
-          </p>
-        ) : (
-          <p>
-            {t('Your reward subscription will appear here once it is issued.')}
-          </p>
-        )}
+        {reward ? (
+          <div className='space-y-1'>
+            <p className='font-medium'>{t('Reward')}</p>
+            <p>
+              {t('Channel Type')}:{' '}
+              {contribution.channel_type_name ||
+                `#${contribution.channel_type}`}
+            </p>
+            <p>
+              {t('Plan')}: {reward.plan_title} (
+              {formatNumber(reward.amount_used, locale)} /{' '}
+              {formatNumber(reward.amount_total, locale)})
+            </p>
+            <p>
+              {t('Expires at')}: {formatTimestamp(reward.end_time)}
+            </p>
+            <StatusBadge
+              label={t(rewardStatus.labelKey)}
+              variant={rewardStatus.variant}
+              copyable={false}
+            />
+          </div>
+        ) : null}
       </AlertDescription>
     </Alert>
   )

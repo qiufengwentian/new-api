@@ -57,6 +57,7 @@ const (
 	contributionCodeFingerprintTaken = "contribution_fingerprint_taken"
 	contributionCodeAlreadyPooled    = "contribution_key_already_pooled"
 	contributionCodePoolingFailed    = "contribution_pooling_failed"
+	contributionCodeRewardFailed     = "contribution_reward_failed"
 )
 
 // The catalog lives in setting/contribution_setting, which cannot import model
@@ -413,8 +414,10 @@ func SubmitContribution(c *gin.Context) {
 		return
 	}
 	// The reward plan is resolved now so a broken catalog entry is reported
-	// before the upstream is bothered; ticket 05 turns it into an instance.
-	if _, err := model.GetSubscriptionPlanById(entry.PlanId); err != nil {
+	// before the upstream is bothered, and so the granted instance can be named in
+	// the response without another lookup.
+	plan, err := model.GetSubscriptionPlanById(entry.PlanId)
+	if err != nil {
 		contributionReject(c, contributionCodePlanAbsent, fmt.Sprintf("subscription plan %d does not exist", entry.PlanId))
 		return
 	}
@@ -460,8 +463,12 @@ func SubmitContribution(c *gin.Context) {
 	// for this channel type gets no second reward, but the key still widens the
 	// pool. A dead or revoked predecessor does not block a fresh grant.
 	rewardGranted := true
-	activeContributions, err := model.GetActiveContributionsByUserAndType(userId, entry.ChannelType)
-	if err == nil && len(activeContributions) > 0 {
+	if hasActive, err := model.HasActiveContributionForType(userId, entry.ChannelType, 0); err != nil {
+		// A failed lookup is logged, not guessed at: the submission still grants
+		// (the grant itself is idempotent per record), and the failure leaves a
+		// trace instead of silently changing the reward decision.
+		common.SysError(fmt.Sprintf("failed to read active contributions of user %d for channel type %d: %v", userId, entry.ChannelType, err))
+	} else if hasActive {
 		rewardGranted = false
 	}
 
@@ -486,6 +493,35 @@ func SubmitContribution(c *gin.Context) {
 		return
 	}
 
+	// The reward is the second half of an accepted contribution. It is granted
+	// from the catalog entry's plan with the existing subscription machinery, and a
+	// failure is reported loudly: a pooled key without its reward is a broken
+	// promise, not a state to hide behind a successful response.
+	var rewardSubscription *model.UserSubscription
+	if rewardGranted {
+		rewardSubscription, err = model.GrantContributionReward(contribution, plan.Id)
+		if err != nil {
+			common.SysError(redactContributionKey(fmt.Sprintf(
+				"failed to grant the contribution reward of contribution %d (plan %d) to user %d: %v",
+				contribution.Id, plan.Id, userId, err), key))
+			contributionReject(c, contributionCodeRewardFailed,
+				"the contribution was recorded but its reward subscription could not be issued; please contact your administrator")
+			return
+		}
+		// The grant is audited with the plan and instance it produced - never the
+		// key, which this whole request keeps out of every durable surface.
+		model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
+			fmt.Sprintf("Granted the contribution reward for channel type %d", entry.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
+				Action: "contribution.grant",
+				Params: model.AuditFields{
+					"contribution_id": contribution.Id,
+					"channel_type":    entry.ChannelType,
+					"plan_id":         plan.Id,
+					"subscription_id": rewardSubscription.Id,
+				},
+			}, c)
+	}
+
 	model.RecordLogWithAdminInfo(userId, model.LogTypeManage,
 		fmt.Sprintf("Submitted an upstream key for channel type %d", entry.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
 			Action: "contribution.submit",
@@ -499,9 +535,28 @@ func SubmitContribution(c *gin.Context) {
 
 	common.ApiSuccess(c, gin.H{
 		"contribution": contributionSummary(contribution, entry.Name),
-		"reward":       nil,
+		"reward":       contributionRewardSummary(rewardSubscription, entry.ChannelType, plan.Title),
 		"redundant":    !rewardGranted,
 	})
+}
+
+// contributionRewardSummary is the user-visible shape of the subscription a
+// contribution just produced: which channel type earned it, which plan, how much
+// of it is left, and until when. It is nil when nothing was granted, so the
+// frontend renders no reward instead of an invented one.
+func contributionRewardSummary(subscription *model.UserSubscription, channelType int, planTitle string) gin.H {
+	if subscription == nil {
+		return nil
+	}
+	return gin.H{
+		"channel_type":    channelType,
+		"subscription_id": subscription.Id,
+		"plan_title":      planTitle,
+		"amount_total":    subscription.AmountTotal,
+		"amount_used":     subscription.AmountUsed,
+		"end_time":        subscription.EndTime,
+		"status":          subscription.Status,
+	}
 }
 
 // contributionSummary is the user-visible shape of one contribution record. It

@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "刪除可貢獻上游項目失敗",
     "Failed to submit the upstream key": "提交上游 Key 失敗",
     "Failed to update contribution entry": "更新可貢獻上游項目失敗",
+    "Granted the contribution reward": "發放了貢獻回饋",
     "Hint shown inside the key input on the user page.": "在使用者頁面的 Key 輸入框中顯示的提示。",
     "Host Channel": "承載渠道",
     "Host channel is required": "請選擇承載渠道",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "選擇多金鑰渠道",
     "Select a subscription plan": "選擇訂閱方案",
     "Shown to users so they can create an upstream account first.": "展示給使用者，方便其先註冊上游帳號。",
+    "Submitted a contributed upstream key": "提交了一把貢獻的上游 Key",
     "Subscription Plan": "訂閱方案",
     "Subscription plan is required": "請選擇訂閱方案",
     "Subscription plan not found": "找不到訂閱方案",
     "The administrator has not opened any upstream for contribution yet.": "管理員尚未開放任何可貢獻的上游。",
     "The multi-key channel that receives contributed keys.": "接收貢獻 Key 的多金鑰渠道。",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "無法把該上游 Key 加入共享號池，請聯絡管理員。",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "貢獻已記錄，但回饋訂閱未能發放。請聯絡管理員。",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "該上游已為你發放回饋，這把新 Key 僅作為冗餘接入。",
     "This upstream is not open for contribution.": "該上游未開放貢獻。",
     "This upstream key failed validation. Check the key and that it still has quota.": "該上游 Key 驗證失敗。請檢查 Key 是否正確且仍有額度。",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "上游 Key 提交成功",
     "Users can pick this upstream while it is enabled.": "啟用後使用者即可選擇這個上游。",
     "While off, no upstream is offered and the user page stays empty.": "關閉後不再提供任何上游，使用者頁面保持為空。",
-    "You must accept the statement before submitting": "提交前必須同意上述說明",
-    "Your reward subscription will appear here once it is issued.": "回饋訂閱發放後將在此顯示。"
+    "You must accept the statement before submitting": "提交前必須同意上述說明"
   }
 }

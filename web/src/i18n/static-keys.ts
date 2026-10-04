@@ -912,6 +912,7 @@ export const STATIC_I18N_KEYS = [
   'This upstream key has already been contributed.',
   'This upstream key is already in the shared pool.',
   'The upstream key could not be added to the shared pool. Please contact your administrator.',
+  'The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.',
   'Too many failed validation attempts. Please wait {{seconds}} seconds before trying again.',
   // Submission toasts raised from use-submit-contribution.
   'Upstream key submitted successfully',

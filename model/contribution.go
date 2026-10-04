@@ -20,6 +20,11 @@ const (
 	ContributionReasonUpstreamUnauthorized = "upstream_unauthorized"
 	ContributionReasonUserRevoked          = "user_revoked"
 
+	// ContributionRewardSource tags the subscription instance a contribution
+	// grants, so the record distinguishes a reward from an administrator's manual
+	// grant ("admin") or a purchase ("order").
+	ContributionRewardSource = "contribution"
+
 	// contributionKeyMask is what a contributed key looks like once stored. It
 	// carries nothing of the plaintext - see MaskContributionKey.
 	contributionKeyMask = "************"
@@ -167,6 +172,71 @@ func GetActiveContributionsByUserAndType(userId, channelType int) ([]Contributio
 		return nil, err
 	}
 	return contributions, nil
+}
+
+// HasActiveContributionForType reports whether the user already holds a live
+// contribution for this channel type. "One upstream counts once" makes such a
+// submission redundant: the key still widens the pool, but no second reward is
+// granted. excludeId lets a caller ignore the record it is about to judge; pass 0
+// when the caller is deciding whether a brand new submission is redundant. Dead
+// and revoked contributions are not active, so they never block a fresh grant.
+func HasActiveContributionForType(userId, channelType, excludeId int) (bool, error) {
+	if userId <= 0 {
+		return false, errors.New("invalid user id")
+	}
+	if channelType <= 0 {
+		return false, errors.New("invalid channel type")
+	}
+	query := DB.Model(&Contribution{}).
+		Where("user_id = ? AND channel_type = ? AND status = ?", userId, channelType, ContributionStatusActive)
+	if excludeId > 0 {
+		query = query.Where("id <> ?", excludeId)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// GrantContributionReward issues the accepted contribution's reward: one
+// subscription instance built from the catalog entry's plan, tagged with the
+// "contribution" source and the plan's own quota/reset rules.
+//
+// It is idempotent per record - a record that already carries a subscription id
+// returns that instance and creates nothing new - and it never cancels, expires
+// or deletes anything: withdrawal and death belong to the release pipeline, which
+// calls AdminInvalidateUserSubscription.
+//
+// The purchase cap is deliberately not enforced (enforcePurchaseCap = false):
+// MaxPurchasePerUser limits purchases, and a reward that failed on it would leave
+// a pooled key without the reward the contributor was promised.
+func GrantContributionReward(contribution *Contribution, planId int) (*UserSubscription, error) {
+	if contribution == nil || contribution.Id <= 0 {
+		return nil, errors.New("invalid contribution")
+	}
+	if planId <= 0 {
+		return nil, errors.New("invalid plan id")
+	}
+	if contribution.SubscriptionId > 0 {
+		return GetUserSubscriptionById(contribution.SubscriptionId)
+	}
+	subscription, _, err := bindSubscriptionWithSource(contribution.UserId, planId, ContributionRewardSource, false)
+	if err != nil {
+		return nil, err
+	}
+	// Point the record at the instance it produced, so the reward can be rendered
+	// and later cancelled from the record.
+	if err := DB.Model(&Contribution{}).
+		Where("id = ?", contribution.Id).
+		Updates(map[string]any{
+			"subscription_id": subscription.Id,
+			"updated_time":    common.GetTimestamp(),
+		}).Error; err != nil {
+		return nil, err
+	}
+	contribution.SubscriptionId = subscription.Id
+	return subscription, nil
 }
 
 // GetAllActiveContributions returns every live contribution: the input of the

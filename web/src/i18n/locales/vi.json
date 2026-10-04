@@ -6890,6 +6890,7 @@
     "Failed to delete contribution entry": "Xóa mục thất bại",
     "Failed to submit the upstream key": "Gửi khóa thượng nguồn thất bại",
     "Failed to update contribution entry": "Cập nhật mục thất bại",
+    "Granted the contribution reward": "Đã cấp phần thưởng đóng góp",
     "Hint shown inside the key input on the user page.": "Gợi ý hiển thị trong ô nhập khóa trên trang người dùng.",
     "Host Channel": "Kênh chứa",
     "Host channel is required": "Vui lòng chọn kênh chứa",
@@ -6916,12 +6917,14 @@
     "Select a multi-key channel": "Chọn kênh đa khóa",
     "Select a subscription plan": "Chọn gói đăng ký",
     "Shown to users so they can create an upstream account first.": "Hiển thị cho người dùng để họ tạo tài khoản nguồn trước.",
+    "Submitted a contributed upstream key": "Đã gửi một khóa nguồn được đóng góp",
     "Subscription Plan": "Gói đăng ký",
     "Subscription plan is required": "Vui lòng chọn gói đăng ký",
     "Subscription plan not found": "Không tìm thấy gói đăng ký",
     "The administrator has not opened any upstream for contribution yet.": "Quản trị viên chưa mở nguồn nào để đóng góp.",
     "The multi-key channel that receives contributed keys.": "Kênh đa khóa nhận các khóa được đóng góp.",
     "The upstream key could not be added to the shared pool. Please contact your administrator.": "Không thể thêm khóa thượng nguồn vào nhóm chia sẻ. Vui lòng liên hệ quản trị viên.",
+    "The contribution was recorded but its reward subscription could not be issued. Please contact your administrator.": "Đã ghi nhận đóng góp nhưng không thể cấp gói đăng ký thưởng. Vui lòng liên hệ quản trị viên.",
     "This upstream already grants you a reward, so the new key was accepted as redundant.": "Nhà cung cấp này đã cấp phần thưởng cho bạn, nên khóa mới chỉ được chấp nhận như bản dư thừa.",
     "This upstream is not open for contribution.": "Nhà cung cấp này chưa mở để đóng góp.",
     "This upstream key failed validation. Check the key and that it still has quota.": "Khóa thượng nguồn này không vượt qua kiểm tra. Hãy kiểm tra khóa và xem còn hạn mức không.",
@@ -6935,7 +6938,6 @@
     "Upstream key submitted successfully": "Đã gửi khóa thượng nguồn thành công",
     "Users can pick this upstream while it is enabled.": "Người dùng có thể chọn nguồn này khi nó được bật.",
     "While off, no upstream is offered and the user page stays empty.": "Khi tắt, không có nguồn nào được cung cấp và trang người dùng vẫn trống.",
-    "You must accept the statement before submitting": "Bạn phải đồng ý với tuyên bố trước khi gửi",
-    "Your reward subscription will appear here once it is issued.": "Gói đăng ký phần thưởng sẽ hiển thị ở đây sau khi được cấp."
+    "You must accept the statement before submitting": "Bạn phải đồng ý với tuyên bố trước khi gửi"
   }
 }

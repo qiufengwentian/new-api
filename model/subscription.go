@@ -481,7 +481,20 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 	return target, nil
 }
 
+// CreateUserSubscriptionFromPlanTx creates a subscription instance from plan
+// inside tx. It models a purchase, so the plan's MaxPurchasePerUser limit applies;
+// a reward grant reaches the same implementation through the source-aware bind
+// helper with enforcePurchaseCap = false instead.
 func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string) (*UserSubscription, error) {
+	return createUserSubscriptionFromPlanTx(tx, userId, plan, source, true)
+}
+
+// createUserSubscriptionFromPlanTx is the single implementation behind every
+// subscription instance this repo creates. enforcePurchaseCap is the only
+// difference between a purchase and a reward: MaxPurchasePerUser limits how many
+// times a user may buy a plan, and a reward that failed on that cap would leave a
+// pooled contribution without the reward the feature promises.
+func createUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string, enforcePurchaseCap bool) (*UserSubscription, error) {
 	if tx == nil {
 		return nil, errors.New("tx is nil")
 	}
@@ -491,7 +504,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if userId <= 0 {
 		return nil, errors.New("invalid user id")
 	}
-	if plan.MaxPurchasePerUser > 0 {
+	if enforcePurchaseCap && plan.MaxPurchasePerUser > 0 {
 		var count int64
 		if err := tx.Model(&UserSubscription{}).
 			Where("user_id = ? AND plan_id = ?", userId, plan.Id).
@@ -707,15 +720,42 @@ func ExpireSubscriptionOrder(tradeNo string, expectedPaymentProvider string) err
 	})
 }
 
-// Admin bind (no payment). Creates a UserSubscription from a plan.
+// Admin bind (no payment). Creates a UserSubscription from a plan, tagged with
+// the "admin" source and bounded by the plan's purchase cap. sourceNote is kept
+// for call-site compatibility and does not affect the created instance.
 func AdminBindSubscription(userId int, planId int, sourceNote string) (string, error) {
+	return AdminBindSubscriptionWithSource(userId, planId, "admin", true)
+}
+
+// AdminBindSubscriptionWithSource creates a no-payment subscription instance
+// tagged with source: "admin" for a manual grant, "contribution" for a
+// contributed-upstream reward, and "order" for a purchase. enforcePurchaseCap
+// selects whether the plan's MaxPurchasePerUser limit applies. Reward grants pass
+// false because that limit governs purchases, not rewards, and a reward that
+// failed on it would break the contribution contract.
+//
+// The returned message is the admin-facing user-group hint ("" when the group did
+// not change), exactly what AdminBindSubscription always returned. Callers that
+// need the created instance itself - GrantContributionReward does, to record which
+// subscription a contribution produced - use bindSubscriptionWithSource; both
+// entry points run the same implementation.
+func AdminBindSubscriptionWithSource(userId, planId int, source string, enforcePurchaseCap bool) (string, error) {
+	_, message, err := bindSubscriptionWithSource(userId, planId, source, enforcePurchaseCap)
+	return message, err
+}
+
+// bindSubscriptionWithSource is the shared core of the admin-bind variants. It
+// opens its own transaction and locks the user row first, so callers must not
+// already be inside a transaction on DB.
+func bindSubscriptionWithSource(userId, planId int, source string, enforcePurchaseCap bool) (*UserSubscription, string, error) {
 	if userId <= 0 || planId <= 0 {
-		return "", errors.New("invalid userId or planId")
+		return nil, "", errors.New("invalid userId or planId")
 	}
 	plan, err := GetSubscriptionPlanById(planId)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
+	var subscription *UserSubscription
 	groupChanged := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		// 与 CompleteSubscriptionOrder 一致：先锁用户行，再做购买次数检查。
@@ -723,20 +763,22 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 		if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&userRow).Error; err != nil {
 			return err
 		}
-		subscription, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "admin")
-		if err == nil {
-			groupChanged = subscription.PrevUserGroup != ""
+		created, err := createUserSubscriptionFromPlanTx(tx, userId, plan, source, enforcePurchaseCap)
+		if err != nil {
+			return err
 		}
-		return err
+		subscription = created
+		groupChanged = subscription.PrevUserGroup != ""
+		return nil
 	})
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription creation")
-		return fmt.Sprintf("用户分组将升级到 %s", plan.UpgradeGroup), nil
+		return subscription, fmt.Sprintf("用户分组将升级到 %s", plan.UpgradeGroup), nil
 	}
-	return "", nil
+	return subscription, "", nil
 }
 
 func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
@@ -892,6 +934,20 @@ func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
 		return false, err
 	}
 	return strictCount == 0, nil
+}
+
+// GetUserSubscriptionById returns one subscription instance by id. It is the read
+// side of a reward grant: the contribution record stores the instance id, and the
+// author needs the subscription to render (or re-read) the granted reward.
+func GetUserSubscriptionById(id int) (*UserSubscription, error) {
+	if id <= 0 {
+		return nil, errors.New("invalid subscription id")
+	}
+	var sub UserSubscription
+	if err := DB.Where("id = ?", id).First(&sub).Error; err != nil {
+		return nil, err
+	}
+	return &sub, nil
 }
 
 // GetAllUserSubscriptions returns all subscriptions (active and expired) for a user.

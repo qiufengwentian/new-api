@@ -71,7 +71,7 @@ func setupContributionCatalogTest(t *testing.T) (*gorm.DB, string) {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Option{}, &model.Channel{}, &model.SubscriptionPlan{},
-		&model.Contribution{}, &model.Ability{},
+		&model.UserSubscription{}, &model.Contribution{}, &model.Ability{},
 		&model.Log{}, &model.AuditLog{}, &model.CasbinRule{}, &model.AuthzRole{},
 	))
 	previousOptionMap := common.OptionMap
@@ -148,7 +148,7 @@ func seedContributionHostChannel(t *testing.T, db *gorm.DB, id int, multiKey boo
 
 func seedContributionPlan(t *testing.T, db *gorm.DB, id int) {
 	t.Helper()
-	plan := model.SubscriptionPlan{Id: id, Title: fmt.Sprintf("Reward %d", id), Enabled: true, DurationUnit: "month", DurationValue: 1}
+	plan := model.SubscriptionPlan{Id: id, Title: fmt.Sprintf("Reward %d", id), Enabled: true, DurationUnit: "month", DurationValue: 1, TotalAmount: 5000}
 	require.NoError(t, db.Create(&plan).Error)
 	model.InvalidateSubscriptionPlanCache(id)
 }
@@ -524,7 +524,8 @@ func TestContributionSubmitRejectsUnavailableUpstream(t *testing.T) {
 }
 
 // The happy path: the key is validated against the upstream, appended to the host
-// channel, recorded by fingerprint, and never echoed back.
+// channel, recorded by fingerprint, rewarded with the entry's plan, and never
+// echoed back.
 func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
@@ -542,8 +543,20 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	assert.Equal(t, "active", record["status"])
 	assert.NotEmpty(t, record["key_mask"])
 	assert.NotContains(t, fmt.Sprint(record["key_mask"]), submittedKey)
-	assert.Nil(t, data["reward"], "ticket 05 fills the reward instance")
 	assert.Equal(t, false, data["redundant"])
+
+	// The reward is the plan the catalog entry carries, granted as a real
+	// subscription instance of this user.
+	reward, ok := data["reward"].(map[string]any)
+	require.True(t, ok, "an accepted, non-redundant submission carries its reward summary")
+	assert.Equal(t, float64(1), reward["channel_type"])
+	assert.Equal(t, "Reward 1", reward["plan_title"])
+	assert.Equal(t, "active", reward["status"])
+	assert.Equal(t, float64(5000), reward["amount_total"])
+	assert.Equal(t, float64(0), reward["amount_used"])
+	assert.NotZero(t, reward["end_time"])
+	rewardSubscriptionId := int(reward["subscription_id"].(float64))
+	require.NotZero(t, rewardSubscriptionId)
 
 	// The key is pooled, enabled, and therefore selectable for relay traffic.
 	channel, err := model.GetChannelById(hostChannelId, true)
@@ -558,8 +571,17 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	assert.Equal(t, model.ContributionKeyFingerprint(channel.GetBaseURL(), submittedKey), *stored.KeyFingerprint)
 	assert.Equal(t, model.ContributionStatusActive, stored.Status)
 	assert.True(t, stored.RewardGranted)
-	assert.Zero(t, stored.SubscriptionId, "the reward instance is ticket 05")
+	assert.Equal(t, rewardSubscriptionId, stored.SubscriptionId, "the record points at the reward it produced")
 	assert.Empty(t, stored.Reason)
+
+	// The granted instance is a subscription from the catalog plan, tagged as a
+	// contribution reward rather than an admin grant or a purchase.
+	var granted model.UserSubscription
+	require.NoError(t, db.Where("id = ?", rewardSubscriptionId).First(&granted).Error)
+	assert.Equal(t, 1, granted.PlanId)
+	assert.Equal(t, "contribution", granted.Source)
+	assert.Equal(t, "active", granted.Status)
+	assert.EqualValues(t, 5000, granted.AmountTotal)
 
 	var all []model.Contribution
 	require.NoError(t, db.Find(&all).Error)
@@ -567,15 +589,34 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), submittedKey, "no contribution row may carry the plaintext key")
 
-	// The submission is audited, and the audit carries no key material either.
+	// The submission and its reward are audited, and neither audit carries key
+	// material.
 	requestId := recorder.Header().Get(common.RequestIdKey)
 	require.NotEmpty(t, requestId)
 	var audits []model.AuditLog
 	require.NoError(t, db.Where("request_id = ? AND category = ?", requestId, model.AuditCategoryOperation).Find(&audits).Error)
-	require.Len(t, audits, 1)
-	require.NotNil(t, audits[0].Other.Op)
-	assert.Equal(t, "contribution.submit", audits[0].Other.Op.Action)
-	assert.NotContains(t, fmt.Sprint(audits[0].Other.Op.Params), submittedKey)
+	require.Len(t, audits, 2, "the submission and the granted reward are each audited")
+
+	auditsByAction := map[string]model.AuditLog{}
+	for _, audit := range audits {
+		require.NotNil(t, audit.Other.Op)
+		auditsByAction[audit.Other.Op.Action] = audit
+		assert.NotContains(t, fmt.Sprint(audit.Other.Op.Params), submittedKey)
+	}
+	require.Contains(t, auditsByAction, "contribution.submit")
+	grantAudit, ok := auditsByAction["contribution.grant"]
+	require.True(t, ok, "the granted reward must be audited as contribution.grant")
+	// AuditFields keeps each parameter as raw JSON, so the values are compared as
+	// JSON rather than as decoded Go types.
+	planIdParam, err := common.Marshal(grantAudit.Other.Op.Params["plan_id"])
+	require.NoError(t, err)
+	assert.JSONEq(t, "1", string(planIdParam))
+	subscriptionIdParam, err := common.Marshal(grantAudit.Other.Op.Params["subscription_id"])
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprint(rewardSubscriptionId), string(subscriptionIdParam))
+	contributionIdParam, err := common.Marshal(grantAudit.Other.Op.Params["contribution_id"])
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprint(stored.Id), string(contributionIdParam))
 }
 
 // A key that failed a previous check but is still present in the host channel is
@@ -646,6 +687,13 @@ func TestContributionSubmitAcceptsRedundantKeyWithoutReward(t *testing.T) {
 
 	assert.Equal(t, true, data["redundant"])
 	assert.Nil(t, data["reward"])
+
+	// "One upstream counts once": the redundant key still widens the pool, but the
+	// channel type never grants a second subscription.
+	var subscriptions []model.UserSubscription
+	require.NoError(t, db.Find(&subscriptions).Error)
+	require.Len(t, subscriptions, 1)
+	assert.Equal(t, "contribution", subscriptions[0].Source)
 
 	var stored []model.Contribution
 	require.NoError(t, db.Order("id").Find(&stored).Error)
