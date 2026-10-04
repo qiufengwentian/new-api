@@ -60,6 +60,19 @@ type channelBalanceResult struct {
 	RawResponse string
 }
 
+// UpstreamStatusError reports a non-200 response from an upstream balance
+// endpoint. Its Error() text is the historical "status code: N" string so
+// existing callers that match on the message keep working; the structured
+// StatusCode lets the contribution probe tell a fatal 401 apart from 403, 5xx
+// and transport failures.
+type UpstreamStatusError struct {
+	StatusCode int
+}
+
+func (e *UpstreamStatusError) Error() string {
+	return fmt.Sprintf("status code: %d", e.StatusCode)
+}
+
 type OpenAIUsageResponse struct {
 	Object string `json:"object"`
 	//DailyCosts []OpenAIUsageDailyCost `json:"daily_costs"`
@@ -166,7 +179,7 @@ func GetResponseBody(method, url string, channel *model.Channel, headers http.He
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status code: %d", res.StatusCode)
+		return nil, &UpstreamStatusError{StatusCode: res.StatusCode}
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -463,7 +476,7 @@ func fetchAdvancedCustomBalance(channel *model.Channel) (channelBalanceResult, e
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return channelBalanceResult{}, fmt.Errorf("status code: %d", response.StatusCode)
+		return channelBalanceResult{}, &UpstreamStatusError{StatusCode: response.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxAdvancedCustomBalanceResponseBytes+1))
 	if err != nil {
