@@ -204,6 +204,22 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
 		}
 
+		// Contributable upstream key catalog (admin) and the user-side entry point
+		contributionRoute := apiRouter.Group("/contribution")
+		contributionRoute.Use(middleware.UserAuth())
+		{
+			contributionRoute.GET("/catalog", middleware.DisableCache(), controller.GetContributionCatalog)
+		}
+		contributionAdminRoute := apiRouter.Group("/contribution/admin")
+		contributionAdminRoute.Use(middleware.RootAuth())
+		{
+			contributionAdminRoute.GET("/catalog", middleware.DisableCache(), controller.GetContributionCatalogAdmin)
+			contributionAdminRoute.POST("/catalog", middleware.DisableCache(), controller.CreateContributionCatalogEntry)
+			contributionAdminRoute.PUT("/catalog", middleware.DisableCache(), controller.UpdateContributionCatalogEntry)
+			contributionAdminRoute.DELETE("/catalog", middleware.DisableCache(), controller.DeleteContributionCatalogEntry)
+			contributionAdminRoute.PUT("/global", middleware.DisableCache(), controller.UpdateContributionGlobalEnabled)
+		}
+
 		// Subscription payment callbacks (no auth)
 		apiRouter.POST("/subscription/epay/notify", anonymousRequestBodyLimit, controller.SubscriptionEpayNotify)
 		apiRouter.GET("/subscription/epay/notify", controller.SubscriptionEpayNotify)
