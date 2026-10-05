@@ -274,6 +274,7 @@ func seedProbeContribution(t *testing.T, userId int, host *model.Channel, contri
 	t.Helper()
 	contribution := &model.Contribution{
 		UserId:         userId,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(model.ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
@@ -439,7 +440,7 @@ func TestProbeContributionLivenessKillsUnauthorizedKey(t *testing.T) {
 			auditJSON, err := common.Marshal(audits[0])
 			require.NoError(t, err)
 			assert.Contains(t, string(auditJSON), fmt.Sprintf(`"contribution_id":%d`, record.Id))
-			assert.Contains(t, string(auditJSON), fmt.Sprintf(`"channel_type":%d`, 1))
+			assert.Contains(t, string(auditJSON), `"entry_code":"ABCDEFGH"`)
 			assert.Contains(t, string(auditJSON), fmt.Sprintf(`"host_channel_id":%d`, host.Id))
 			assert.NotContains(t, string(auditJSON), contributedKey)
 

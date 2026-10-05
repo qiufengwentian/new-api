@@ -238,6 +238,46 @@ func TestContributionCatalogAdminLifecyclePersistsEntries(t *testing.T) {
 	assert.Empty(t, contribution_setting.AllEntries())
 }
 
+// The internal id and the upstream code are deliberately decoupled: after an entry
+// is deleted, the next entry reuses the freed id range (max+1 over the remaining
+// catalog) but the code namespace never reuses a deleted entry's code.
+func TestContributionCatalogDeleteReusesIdButNeverTheCode(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	seedContributionHostChannel(t, db, 2, true, "sk-multi-a\nsk-multi-b")
+	seedContributionPlan(t, db, 1)
+	router := newContributionCatalogTestRouter()
+
+	entry := func(channelType int, name string) string {
+		return fmt.Sprintf(`{"channel_type":%d,"name":"%s","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":2,"plan_id":1}`, channelType, name)
+	}
+
+	create := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(1, "First")))
+	require.Equal(t, true, create["success"], "body: %+v", create)
+	firstData := create["data"].(map[string]any)
+	firstEntry := firstData["entry"].(map[string]any)
+	firstCode := firstEntry["code"].(string)
+	assert.Equal(t, float64(1), firstEntry["id"])
+
+	// Delete the only entry, so the next internal id is 1 again.
+	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodDelete, "/api/contribution/admin/catalog?id=1", ""))["success"])
+	assert.Empty(t, contribution_setting.AllEntries())
+
+	// The fresh entry reuses the freed internal id, but must carry a brand-new code.
+	recreate := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(1, "Second")))
+	require.Equal(t, true, recreate["success"], "body: %+v", recreate)
+	recreatedData := recreate["data"].(map[string]any)
+	recreatedEntry := recreatedData["entry"].(map[string]any)
+	assert.Equal(t, float64(1), recreatedEntry["id"], "the internal id is max+1 over the remaining catalog")
+	recreatedCode := recreatedEntry["code"].(string)
+	assert.NotEqual(t, firstCode, recreatedCode, "a deleted entry's code is never reused")
+
+	// The fresh code is well-formed: 8 symbols from the unambiguous alphabet.
+	assert.Len(t, recreatedCode, 8)
+	for _, r := range recreatedCode {
+		require.NotContains(t, "01IOL", string(r), "code %s uses an ambiguous character", recreatedCode)
+	}
+}
+
 func TestContributionCatalogAdminRejectsInvalidEnable(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	seedContributionHostChannel(t, db, 1, false, "sk-single")
@@ -270,13 +310,26 @@ func TestContributionCatalogAdminRejectsInvalidEnable(t *testing.T) {
 
 	enabled := entry(3, 2, 1, true)
 	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", enabled))["success"])
-	duplicate := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(3, 2, 1, true)))
-	assert.Equal(t, false, duplicate["success"])
-	assert.Equal(t, "contribution_channel_type_taken", duplicate["code"])
-	require.Len(t, contribution_setting.AllEntries(), 1)
+
+	// Two enabled entries may deliberately share the same provider channel type:
+	// the code is the only identity that stays unique, so the second entry is
+	// accepted and receives its own auto-assigned code.
+	second := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(3, 2, 1, true)))
+	require.Equal(t, true, second["success"], "body: %+v", second)
+	data, ok := second["data"].(map[string]any)
+	require.True(t, ok)
+	secondEntry, ok := data["entry"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, secondEntry["code"], "the second entry carries its own upstream code")
+	firstEntry, ok := data["entries"].([]any)
+	require.True(t, ok)
+	require.Len(t, firstEntry, 2)
+	firstRaw, ok := firstEntry[0].(map[string]any)
+	require.True(t, ok)
+	assert.NotEqual(t, firstRaw["code"], secondEntry["code"], "two entries never share a code")
 
 	// A disabled entry skips the host-channel and plan checks.
-	disabled := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(3, 999, 999, false)))
+	disabled := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", entry(4, 999, 999, false)))
 	require.Equal(t, true, disabled["success"], "body: %+v", disabled)
 
 	missing := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPut, "/api/contribution/admin/catalog", `{"id":9999,"channel_type":4,"name":"Missing","enabled":false}`))
@@ -432,7 +485,7 @@ func (u *contributionSubmitUpstream) calls() (balanceRequests int, inferenceCall
 // seedContributionSubmitSetup installs the real pieces a submission needs: a
 // multi-key host channel that points at the fake upstream, a reward plan, and an
 // enabled catalog entry bound to both.
-func seedContributionSubmitSetup(t *testing.T, db *gorm.DB, handler http.Handler, token string, upstreamURL string) int {
+func seedContributionSubmitSetup(t *testing.T, db *gorm.DB, handler http.Handler, token string, upstreamURL string) (int, string) {
 	t.Helper()
 	// The minimal inference runs through real relay billing, which refuses a model
 	// without a configured price. Self-use mode is the repo's supported way to run
@@ -463,14 +516,21 @@ func seedContributionSubmitSetup(t *testing.T, db *gorm.DB, handler http.Handler
 	entry := `{"channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}`
 	created := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/admin/catalog", entry))
 	require.Equal(t, true, created["success"], "body: %+v", created)
+	data, ok := created["data"].(map[string]any)
+	require.True(t, ok)
+	createdEntry, ok := data["entry"].(map[string]any)
+	require.True(t, ok)
+	entryCode, ok := createdEntry["code"].(string)
+	require.True(t, ok, "a created entry carries its auto-assigned upstream code")
+	require.Len(t, entryCode, 8)
 	switched := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPut, "/api/contribution/admin/global", `{"enabled":true}`))
 	require.Equal(t, true, switched["success"], "body: %+v", switched)
-	return hostChannel.Id
+	return hostChannel.Id, entryCode
 }
 
-func submitContribution(t *testing.T, handler http.Handler, token string, channelType int, key string, agreed bool) (*httptest.ResponseRecorder, map[string]any) {
+func submitContribution(t *testing.T, handler http.Handler, token string, entryId string, key string, agreed bool) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
-	body := fmt.Sprintf(`{"channel_type":%d,"key":%q,"agreed":%t}`, channelType, key, agreed)
+	body := fmt.Sprintf(`{"entry_id":%q,"key":%q,"agreed":%t}`, entryId, key, agreed)
 	recorder := callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit", body)
 	return recorder, decodeContributionResponse(t, recorder)
 }
@@ -496,9 +556,9 @@ func TestContributionSubmitRequiresServerSideConsent(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	_, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
-	recorder, response := submitContribution(t, handler, token, 1, "sk-without-consent", false)
+	recorder, response := submitContribution(t, handler, token, entryCode, "sk-without-consent", false)
 
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_consent_required", response["code"])
@@ -521,14 +581,14 @@ func TestContributionSubmitRejectsUnavailableUpstream(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	_, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
-	_, response := submitContribution(t, handler, token, 7, "sk-unknown-type", true)
+	_, response := submitContribution(t, handler, token, "ZZZZZZZZ", "sk-unknown-type", true)
 	assert.Equal(t, false, response["success"])
-	assert.Equal(t, "contribution_channel_type_unknown", response["code"])
+	assert.Equal(t, "contribution_entry_unknown", response["code"])
 
 	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPut, "/api/contribution/admin/global", `{"enabled":false}`))["success"])
-	_, response = submitContribution(t, handler, token, 1, "sk-globally-disabled", true)
+	_, response = submitContribution(t, handler, token, entryCode, "sk-globally-disabled", true)
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_global_disabled", response["code"])
 }
@@ -540,16 +600,16 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	const submittedKey = "sk-contribution-valid-key"
-	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+	recorder, response := submitContribution(t, handler, token, entryCode, submittedKey, true)
 	data := contributionDataOf(t, response)
 
 	// The plaintext key is nowhere in the response, in any shape.
 	assert.NotContains(t, recorder.Body.String(), submittedKey)
 	record := contributionRecordOf(t, response)
-	assert.Equal(t, float64(1), record["channel_type"])
+	assert.Equal(t, entryCode, record["entry_code"])
 	assert.Equal(t, "active", record["status"])
 	assert.NotEmpty(t, record["key_mask"])
 	assert.NotContains(t, fmt.Sprint(record["key_mask"]), submittedKey)
@@ -559,7 +619,7 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	// subscription instance of this user.
 	reward, ok := data["reward"].(map[string]any)
 	require.True(t, ok, "an accepted, non-redundant submission carries its reward summary")
-	assert.Equal(t, float64(1), reward["channel_type"])
+	assert.Equal(t, entryCode, reward["entry_code"])
 	assert.Equal(t, "Reward 1", reward["plan_title"])
 	assert.Equal(t, "active", reward["status"])
 	assert.Equal(t, float64(5000), reward["amount_total"])
@@ -635,14 +695,14 @@ func TestContributionSubmitReenablesAPooledButDisabledKey(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	const submittedKey = "sk-contribution-reenabled"
 	require.NoError(t, model.AppendOrEnableChannelKey(hostChannelId, submittedKey))
 	require.NoError(t, model.SetChannelKeyStatus(hostChannelId, submittedKey, common.ChannelStatusAutoDisabled, model.ContributionReasonUpstreamUnauthorized))
 
 	response := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
-		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, submittedKey)))
+		fmt.Sprintf(`{"entry_id":%q,"key":%q,"agreed":true}`, entryCode, submittedKey)))
 	require.Equal(t, true, response["success"], "body: %+v", response)
 
 	channel, err := model.GetChannelById(hostChannelId, true)
@@ -657,13 +717,13 @@ func TestContributionSubmitRejectsAlreadySubmittedKey(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	const submittedKey = "sk-contribution-first-come"
 	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
-		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, submittedKey)))["success"])
+		fmt.Sprintf(`{"entry_id":%q,"key":%q,"agreed":true}`, entryCode, submittedKey)))["success"])
 
-	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+	recorder, response := submitContribution(t, handler, token, entryCode, submittedKey, true)
 
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_fingerprint_taken", response["code"])
@@ -687,7 +747,7 @@ func TestContributionSubmitRejectsAKeyJudgedDeadForAnotherChannelType(t *testing
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	_, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	// The death happened under channel type 2 and another host channel, long before
 	// this submission: the fingerprint knows nothing about it, the key hash does.
@@ -703,7 +763,7 @@ func TestContributionSubmitRejectsAKeyJudgedDeadForAnotherChannelType(t *testing
 		Reason:         model.ContributionReasonUpstreamUnauthorized,
 	}).Error)
 
-	recorder, response := submitContribution(t, handler, token, 1, deadKey, true)
+	recorder, response := submitContribution(t, handler, token, entryCode, deadKey, true)
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_key_dead", response["code"])
 	assert.NotEmpty(t, response["message"])
@@ -730,7 +790,7 @@ func TestContributionSubmitRejectsAKeyJudgedDeadForAnotherChannelType(t *testing
 		Reason:         model.ContributionReasonUserRevoked,
 	}).Error)
 
-	_, response = submitContribution(t, handler, token, 1, revokedKey, true)
+	_, response = submitContribution(t, handler, token, entryCode, revokedKey, true)
 	require.Equal(t, true, response["success"], "a revoked key is free to be contributed again: %+v", response)
 }
 
@@ -742,7 +802,7 @@ func TestContributionSubmitRetriesAFailedRewardForItsOwnRecord(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	var operator model.User
 	require.NoError(t, db.Where("username = ?", "contribution-root").First(&operator).Error)
@@ -753,6 +813,7 @@ func TestContributionSubmitRetriesAFailedRewardForItsOwnRecord(t *testing.T) {
 	require.NoError(t, model.AppendOrEnableChannelKey(hostChannelId, submittedKey))
 	failed := &model.Contribution{
 		UserId:         operator.Id,
+		EntryCode:      entryCode,
 		ChannelType:    1,
 		HostChannelId:  hostChannelId,
 		KeyFingerprint: common.GetPointer(model.ContributionKeyFingerprint(channel.GetBaseURL(), submittedKey)),
@@ -764,7 +825,7 @@ func TestContributionSubmitRetriesAFailedRewardForItsOwnRecord(t *testing.T) {
 	}
 	require.NoError(t, failed.Create())
 
-	recorder, response := submitContribution(t, handler, token, 1, submittedKey, true)
+	recorder, response := submitContribution(t, handler, token, entryCode, submittedKey, true)
 	data := contributionDataOf(t, response)
 	assert.Equal(t, false, data["redundant"], "a recovered grant is a normal rewarded submission")
 	reward, ok := data["reward"].(map[string]any)
@@ -805,12 +866,13 @@ func TestContributionSubmitRewardsAfterAnEarlierGrantNeverCompleted(t *testing.T
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	var operator model.User
 	require.NoError(t, db.Where("username = ?", "contribution-root").First(&operator).Error)
 	failed := &model.Contribution{
 		UserId:         operator.Id,
+		EntryCode:      entryCode,
 		ChannelType:    1,
 		HostChannelId:  hostChannelId,
 		KeyFingerprint: common.GetPointer("fp-earlier-failed-reward"),
@@ -822,7 +884,7 @@ func TestContributionSubmitRewardsAfterAnEarlierGrantNeverCompleted(t *testing.T
 	}
 	require.NoError(t, failed.Create())
 
-	_, response := submitContribution(t, handler, token, 1, "sk-contribution-after-failure", true)
+	_, response := submitContribution(t, handler, token, entryCode, "sk-contribution-after-failure", true)
 	data := contributionDataOf(t, response)
 	assert.Equal(t, false, data["redundant"], "an unrewarded active record does not make the new key redundant")
 	require.NotNil(t, data["reward"], "the new submission is rewarded")
@@ -841,14 +903,14 @@ func TestContributionSubmitAcceptsRedundantKeyWithoutReward(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	first := decodeContributionResponse(t, callContributionCatalog(t, handler, token, http.MethodPost, "/api/contribution/submit",
-		fmt.Sprintf(`{"channel_type":1,"key":%q,"agreed":true}`, "sk-contribution-first")))
+		fmt.Sprintf(`{"entry_id":%q,"key":%q,"agreed":true}`, entryCode, "sk-contribution-first")))
 	require.Equal(t, true, first["success"], "body: %+v", first)
 	assert.Equal(t, false, contributionDataOf(t, first)["redundant"])
 
-	_, response := submitContribution(t, handler, token, 1, "sk-contribution-second", true)
+	_, response := submitContribution(t, handler, token, entryCode, "sk-contribution-second", true)
 	data := contributionDataOf(t, response)
 
 	assert.Equal(t, true, data["redundant"])
@@ -879,9 +941,9 @@ func TestContributionSubmitRequiresAWorkingInference(t *testing.T) {
 	upstream := newContributionSubmitUpstream(t)
 	upstream.rejectInferenceWith(http.StatusUnauthorized)
 	handler := newContributionCatalogTestRouter()
-	hostChannelId := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	hostChannelId, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
-	recorder, response := submitContribution(t, handler, token, 1, "sk-balance-only", true)
+	recorder, response := submitContribution(t, handler, token, entryCode, "sk-balance-only", true)
 
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_key_invalid", response["code"])
@@ -906,10 +968,10 @@ func TestContributionSubmitCoolsDownAfterRepeatedValidationFailures(t *testing.T
 	upstream := newContributionSubmitUpstream(t)
 	upstream.rejectBalanceWith(http.StatusUnauthorized)
 	handler := newContributionCatalogTestRouter()
-	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	_, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	for attempt := range 3 {
-		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-cooled-down-%d", attempt), true)
+		_, response := submitContribution(t, handler, token, entryCode, fmt.Sprintf("sk-cooled-down-%d", attempt), true)
 		assert.Equal(t, false, response["success"])
 		assert.Equal(t, "contribution_key_invalid", response["code"], "attempt %d", attempt)
 	}
@@ -917,7 +979,7 @@ func TestContributionSubmitCoolsDownAfterRepeatedValidationFailures(t *testing.T
 	balanceRequests, _ := upstream.calls()
 	require.EqualValues(t, 3, balanceRequests)
 
-	_, response := submitContribution(t, handler, token, 1, "sk-cooled-down-4", true)
+	_, response := submitContribution(t, handler, token, entryCode, "sk-cooled-down-4", true)
 	assert.Equal(t, false, response["success"])
 	assert.Equal(t, "contribution_rate_limited", response["code"])
 	retryAfter, ok := response["retry_after_seconds"].(float64)
@@ -988,6 +1050,7 @@ func seedContributionRevokeFixture(t *testing.T, db *gorm.DB, prefix string) *co
 
 	contribution := &model.Contribution{
 		UserId:         ownerId,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  fixture.hostChannelId,
 		KeyFingerprint: common.GetPointer(fixture.fingerprint),
@@ -1089,7 +1152,7 @@ func TestContributionRevokeDisablesTheKeyCancelsTheRewardAndAudits(t *testing.T)
 	record := contributionRecordOf(t, response)
 
 	assert.Equal(t, float64(fixture.contributionId), record["id"])
-	assert.Equal(t, float64(1), record["channel_type"])
+	assert.Equal(t, "ABCDEFGH", record["entry_code"])
 	assert.Equal(t, "OpenAI", record["channel_type_name"])
 	assert.Equal(t, model.ContributionStatusRevoked, record["status"])
 	assert.Equal(t, model.ContributionReasonUserRevoked, record["reason"])
@@ -1163,21 +1226,21 @@ func TestContributionSubmitSuccessClearsFailureCounter(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	upstream := newContributionSubmitUpstream(t)
 	handler := newContributionCatalogTestRouter()
-	seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
+	_, entryCode := seedContributionSubmitSetup(t, db, handler, token, upstream.server.URL)
 
 	upstream.rejectBalanceWith(http.StatusUnauthorized)
 	for attempt := range 2 {
-		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-flaky-%d", attempt), true)
+		_, response := submitContribution(t, handler, token, entryCode, fmt.Sprintf("sk-flaky-%d", attempt), true)
 		require.Equal(t, "contribution_key_invalid", response["code"])
 	}
 
 	upstream.rejectBalanceWith(0)
-	_, response := submitContribution(t, handler, token, 1, "sk-flaky-recovered", true)
+	_, response := submitContribution(t, handler, token, entryCode, "sk-flaky-recovered", true)
 	require.Equal(t, true, response["success"], "body: %+v", response)
 
 	upstream.rejectBalanceWith(http.StatusUnauthorized)
 	for attempt := range 2 {
-		_, response := submitContribution(t, handler, token, 1, fmt.Sprintf("sk-flaky-again-%d", attempt), true)
+		_, response := submitContribution(t, handler, token, entryCode, fmt.Sprintf("sk-flaky-again-%d", attempt), true)
 		assert.Equal(t, "contribution_key_invalid", response["code"], "the counter restarted after a success")
 	}
 }
@@ -1217,15 +1280,16 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	// Only channel type 1 has a catalog entry; the other types are named by their
 	// built-in channel type name.
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
-		contribution_setting.CatalogOptionKey: `[{"id":1,"channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}]`,
+		contribution_setting.CatalogOptionKey: `[{"id":1,"code":"ABCDEFGH","channel_type":1,"name":"OpenAI","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}]`,
 	}))
 
 	const pooledKey = "sk-mine-plaintext-must-never-be-returned"
 	seedContributionHostChannel(t, db, 1, true, "sk-host-pooled\n"+pooledKey)
 
-	seed := func(userId, channelType int, status string, reason string, fingerprint string) *model.Contribution {
+	seed := func(userId, channelType int, entryCode string, status string, reason string, fingerprint string) *model.Contribution {
 		contribution := &model.Contribution{
 			UserId:        userId,
+			EntryCode:     entryCode,
 			ChannelType:   channelType,
 			HostChannelId: 1,
 			KeyMask:       model.ContributionKeyMask,
@@ -1243,12 +1307,12 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 		return contribution
 	}
 
-	liveRewarded := seed(ownerId, 1, model.ContributionStatusActive, "", "fp-mine-1")
-	liveRedundant := seed(ownerId, 1, model.ContributionStatusActive, "", "fp-mine-2")
-	revoked := seed(ownerId, 1, model.ContributionStatusRevoked, model.ContributionReasonUserRevoked, "")
-	liveOtherType := seed(ownerId, 3, model.ContributionStatusActive, "", "fp-mine-3")
-	dead := seed(ownerId, 3, model.ContributionStatusDead, model.ContributionReasonUpstreamUnauthorized, "fp-mine-4")
-	foreign := seed(strangerId, 1, model.ContributionStatusActive, "", "fp-mine-foreign")
+	liveRewarded := seed(ownerId, 1, "ABCDEFGH", model.ContributionStatusActive, "", "fp-mine-1")
+	liveRedundant := seed(ownerId, 1, "ABCDEFGH", model.ContributionStatusActive, "", "fp-mine-2")
+	revoked := seed(ownerId, 1, "ABCDEFGH", model.ContributionStatusRevoked, model.ContributionReasonUserRevoked, "")
+	liveOtherType := seed(ownerId, 3, "CCCCDDDD", model.ContributionStatusActive, "", "fp-mine-3")
+	dead := seed(ownerId, 3, "CCCCDDDD", model.ContributionStatusDead, model.ContributionReasonUpstreamUnauthorized, "fp-mine-4")
+	foreign := seed(strangerId, 1, "EEEEFFFF", model.ContributionStatusActive, "", "fp-mine-foreign")
 
 	reward, err := model.GrantContributionReward(liveRewarded, 1)
 	require.NoError(t, err)
@@ -1266,7 +1330,7 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	assert.Equal(t, []int{dead.Id, liveOtherType.Id, revoked.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
 
 	liveItem := byId[liveRewarded.Id]
-	assert.Equal(t, float64(1), liveItem["channel_type"])
+	assert.Equal(t, "ABCDEFGH", liveItem["entry_code"])
 	assert.Equal(t, "OpenAI", liveItem["channel_type_name"])
 	assert.Equal(t, model.ContributionStatusActive, liveItem["status"])
 	assert.Empty(t, liveItem["reason"])
@@ -1303,7 +1367,7 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 
 	summary, ok := contributionDataOf(t, response)["summary"].(map[string]any)
 	require.True(t, ok, "the list carries the account summary")
-	assert.Equal(t, float64(2), summary["channel_type_count"], "distinct live channel types: 1 and 3")
+	assert.Equal(t, float64(2), summary["entry_code_count"], "distinct live entries: 1 and 2")
 
 	assert.NotContains(t, recorder.Body.String(), pooledKey, "the list never echoes the plaintext key")
 	assert.NotContains(t, recorder.Body.String(), "fp-mine", "the fingerprint never leaves the database")
@@ -1338,18 +1402,20 @@ func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
 	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, adminToken, http.MethodPost, "/api/contribution/admin/catalog", entry))["success"])
 	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, handler, adminToken, http.MethodPut, "/api/contribution/admin/global", `{"enabled":true}`))["success"])
 
-	// Two live channel types plus one that already ended: only the live types count
-	// as upstreams this account brought in.
+	// Two live catalog entries plus one that already ended: only the live entries
+	// count as upstreams this account brought in, keyed by the entry code.
 	for index, seed := range []struct {
 		channelType int
+		entryCode   string
 		status      string
 	}{
-		{channelType: 1, status: model.ContributionStatusActive},
-		{channelType: 3, status: model.ContributionStatusActive},
-		{channelType: 3, status: model.ContributionStatusDead},
+		{channelType: 1, entryCode: "ABCDEFGH", status: model.ContributionStatusActive},
+		{channelType: 3, entryCode: "JKMNPRST", status: model.ContributionStatusActive},
+		{channelType: 3, entryCode: "JKMNPRST", status: model.ContributionStatusDead},
 	} {
 		contribution := &model.Contribution{
 			UserId:         ownerId,
+			EntryCode:      seed.entryCode,
 			ChannelType:    seed.channelType,
 			HostChannelId:  1,
 			KeyFingerprint: common.GetPointer(fmt.Sprintf("fp-catalog-summary-%d", index)),
@@ -1367,5 +1433,5 @@ func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
 
 	summary, ok := data["summary"].(map[string]any)
 	require.True(t, ok, "the catalog read reports the account's contribution summary")
-	assert.Equal(t, float64(2), summary["channel_type_count"])
+	assert.Equal(t, float64(2), summary["entry_code_count"])
 }

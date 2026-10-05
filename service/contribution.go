@@ -109,34 +109,37 @@ func ProbeContributionLiveness(ctx context.Context) error {
 // appears nowhere, so the audit trail is not a place to recover a credential.
 func recordContributionKillAudit(contribution *model.Contribution) {
 	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
-		fmt.Sprintf("Disabled the contributed upstream key of channel type %d after the upstream rejected it", contribution.ChannelType),
+		fmt.Sprintf("Disabled the contributed upstream key of entry %s after the upstream rejected it", contribution.EntryCode),
 		nil, &model.AuditOperation{
 			Action: "contribution.kill",
 			Params: model.AuditFields{
 				"contribution_id": contribution.Id,
-				"channel_type":    contribution.ChannelType,
+				"entry_code":      contribution.EntryCode,
 				"host_channel_id": contribution.HostChannelId,
 			},
 		})
 }
 
 // ContributionUpstreamName names the upstream a contribution belongs to for
-// user-facing copy: the administrator's catalog name when the channel type still
-// has an enabled entry, otherwise the built-in channel type name, and finally a
-// translated "channel type N" for a type this build does not know. The final
-// fallback goes through the same backend i18n bundle as the rest of the notice, so
-// no language ever renders a raw English literal.
+// user-facing copy: the administrator's catalog name when the entry's code still
+// resolves to an enabled entry, otherwise the built-in channel type name, and
+// finally a translated "channel type N" for a type this build does not know. The
+// final fallback goes through the same backend i18n bundle as the rest of the
+// notice, so no language ever renders a raw English literal.
 //
 // It is the one name resolver shared by the liveness probe's death notice and the
 // user-facing revoke notice; the contribution list renders through it as well.
-func ContributionUpstreamName(channelType int, language string) string {
-	if entry, found := contribution_setting.EntryByChannelType(channelType); found && strings.TrimSpace(entry.Name) != "" {
+func ContributionUpstreamName(contribution *model.Contribution, language string) string {
+	if contribution == nil {
+		return ""
+	}
+	if entry, found := contribution_setting.EntryByCode(contribution.EntryCode); found && strings.TrimSpace(entry.Name) != "" {
 		return entry.Name
 	}
-	if name := constant.GetChannelTypeName(channelType); name != "" && name != "Unknown" {
+	if name := constant.GetChannelTypeName(contribution.ChannelType); name != "" && name != "Unknown" {
 		return name
 	}
-	return i18n.Translate(language, i18n.MsgContributionChannelTypeFallback, map[string]any{"Type": channelType})
+	return i18n.Translate(language, i18n.MsgContributionChannelTypeFallback, map[string]any{"Type": contribution.ChannelType})
 }
 
 // NotifyContributionContributor tells the contributor about a terminal transition
@@ -159,7 +162,7 @@ func NotifyContributionContributor(contribution *model.Contribution, titleKey st
 	notice := dto.NewNotify(dto.NotifyTypeChannelUpdate,
 		i18n.Translate(setting.Language, titleKey),
 		i18n.Translate(setting.Language, contentKey, map[string]any{
-			"Upstream": ContributionUpstreamName(contribution.ChannelType, setting.Language),
+			"Upstream": ContributionUpstreamName(contribution, setting.Language),
 		}),
 		nil)
 	if err := NotifyUser(contributor.Id, contributor.Email, setting, notice); err != nil {

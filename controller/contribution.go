@@ -49,12 +49,11 @@ const (
 	contributionCodeHostChannelAbsent = "contribution_host_channel_not_found"
 	contributionCodeChannelNotMulti   = "contribution_channel_not_multi_key"
 	contributionCodePlanAbsent        = "contribution_plan_not_found"
-	contributionCodeChannelTypeTaken  = "contribution_channel_type_taken"
 
 	// Rejection codes of the user-side submission.
 	contributionCodeConsentRequired  = "contribution_consent_required"
 	contributionCodeGlobalDisabled   = "contribution_global_disabled"
-	contributionCodeTypeUnknown      = "contribution_channel_type_unknown"
+	contributionCodeEntryUnknown     = "contribution_entry_unknown"
 	contributionCodeRateLimited      = "contribution_rate_limited"
 	contributionCodeKeyInvalid       = "contribution_key_invalid"
 	contributionCodeKeyDead          = "contribution_key_dead"
@@ -82,11 +81,11 @@ func contributionReject(c *gin.Context, code string, message string) {
 // contributionCatalogError maps catalog invariant violations to rejection codes.
 func contributionCatalogError(err error) (string, string) {
 	switch {
-	case errors.Is(err, contribution_setting.ErrChannelTypeTaken):
-		return contributionCodeChannelTypeTaken, err.Error()
-	case errors.Is(err, contribution_setting.ErrChannelTypeRequired),
-		errors.Is(err, contribution_setting.ErrNameRequired),
-		errors.Is(err, contribution_setting.ErrEntryIdDuplicated):
+	case errors.Is(err, contribution_setting.ErrNameRequired),
+		errors.Is(err, contribution_setting.ErrEntryIdDuplicated),
+		errors.Is(err, contribution_setting.ErrEntryCodeRequired),
+		errors.Is(err, contribution_setting.ErrEntryCodeInvalid),
+		errors.Is(err, contribution_setting.ErrEntryCodeDuplicated):
 		return contributionCodeInvalidEntry, err.Error()
 	default:
 		return "", err.Error()
@@ -108,8 +107,10 @@ func saveContributionEntries(c *gin.Context, entries []contribution_setting.Cont
 }
 
 // validateContributionEntryForEnable enforces the enable-time prerequisites: the
-// host channel must be an existing multi-key channel, the reward plan must exist,
-// and no other enabled entry may claim the same channel type.
+// host channel must be an existing multi-key channel and the reward plan must
+// exist. The sibling slice is kept so callers need no extra read, but there is no
+// channel-type uniqueness anymore: two entries may deliberately back the same
+// provider channel type as two distinct upstreams.
 func validateContributionEntryForEnable(entry contribution_setting.ContributionEntry, siblings []contribution_setting.ContributionEntry) (string, string) {
 	hostChannel, err := model.GetChannelById(entry.HostChannelId, false)
 	if err != nil {
@@ -120,11 +121,6 @@ func validateContributionEntryForEnable(entry contribution_setting.ContributionE
 	}
 	if _, err := model.GetSubscriptionPlanById(entry.PlanId); err != nil {
 		return contributionCodePlanAbsent, fmt.Sprintf("subscription plan %d does not exist", entry.PlanId)
-	}
-	for _, sibling := range siblings {
-		if sibling.Id != entry.Id && sibling.Enabled && sibling.ChannelType == entry.ChannelType {
-			return contributionCodeChannelTypeTaken, fmt.Sprintf("channel type %d already has an enabled entry (%s)", entry.ChannelType, sibling.Name)
-		}
 	}
 	return "", ""
 }
@@ -137,7 +133,11 @@ func GetContributionCatalogAdmin(c *gin.Context) {
 	})
 }
 
-// CreateContributionCatalogEntry adds one entry and assigns it a stable id.
+// CreateContributionCatalogEntry adds one entry: it assigns the next internal id
+// (max+1, for admin-page display and sorting only) and an 8-character upstream
+// code that is never regenerated and never reused. The request body cannot pick
+// the code - the backend owns the code namespace, so a client cannot collide two
+// entries on one code.
 func CreateContributionCatalogEntry(c *gin.Context) {
 	entry := contribution_setting.ContributionEntry{}
 	if err := c.ShouldBindJSON(&entry); err != nil {
@@ -150,6 +150,28 @@ func CreateContributionCatalogEntry(c *gin.Context) {
 		maxId = max(maxId, existing.Id)
 	}
 	entry.Id = maxId + 1
+	// The code namespace is independent of the id namespace: a freshly generated
+	// code must not collide with any existing entry, enabled or not, so a deleted
+	// entry's code is never silently reused.
+	used := make(map[string]bool, len(entries))
+	for _, existing := range entries {
+		used[existing.Code] = true
+	}
+	for range 100 {
+		generated, err := contribution_setting.NewEntryCode()
+		if err != nil {
+			contributionReject(c, contributionCodeInvalidEntry, "failed to generate an upstream code: "+err.Error())
+			return
+		}
+		if !used[generated] {
+			entry.Code = generated
+			break
+		}
+	}
+	if entry.Code == "" {
+		contributionReject(c, contributionCodeInvalidEntry, "failed to generate a unique upstream code")
+		return
+	}
 	if entry.Enabled {
 		if code, message := validateContributionEntryForEnable(entry, entries); code != "" {
 			contributionReject(c, code, message)
@@ -183,6 +205,9 @@ func UpdateContributionCatalogEntry(c *gin.Context) {
 			return
 		}
 	}
+	// The code is permanent: an update may edit the entry's name, binding or
+	// switches, but never its upstream identity selection.
+	entry.Code = entries[index].Code
 	entries[index] = entry
 	if !saveContributionEntries(c, entries) {
 		return
@@ -236,7 +261,9 @@ func GetContributionCatalog(c *gin.Context) {
 	public := make([]gin.H, 0, len(entries))
 	for _, entry := range entries {
 		public = append(public, gin.H{
-			"channel_type":    entry.ChannelType,
+			// The user-facing identity of the upstream is its 8-character code, not
+			// the internal id nor the host channel's provider type number.
+			"entry_id":        entry.Code,
 			"name":            entry.Name,
 			"register_url":    entry.RegisterURL,
 			"key_placeholder": entry.KeyPlaceholder,
@@ -301,17 +328,18 @@ func GetMyContributions(c *gin.Context) {
 	})
 }
 
-// contributionAccountSummary is the account's contribution tally: how many distinct
-// channel types still reward it, rendered as "upstreams you have already brought
-// in". A failed count is logged and reported as zero rather than blanking the
-// catalog or the list around it; the next read retries.
+// contributionAccountSummary is the account's contribution tally: how many
+// distinct catalog entries (upstream codes) still reward it, rendered as
+// "upstreams you have already brought in". A failed count is logged and reported
+// as zero rather than blanking the catalog or the list around it; the next read
+// retries.
 func contributionAccountSummary(userId int) gin.H {
-	count, err := model.CountActiveContributionChannelTypes(userId)
+	count, err := model.CountActiveContributionEntryCodes(userId)
 	if err != nil {
-		common.SysError(fmt.Sprintf("failed to count the active contribution channel types of user %d: %v", userId, err))
+		common.SysError(fmt.Sprintf("failed to count the active contribution entry codes of user %d: %v", userId, err))
 		count = 0
 	}
-	return gin.H{"channel_type_count": count}
+	return gin.H{"entry_code_count": count}
 }
 
 // ---------------------------------------------------------------------------
@@ -320,8 +348,11 @@ func contributionAccountSummary(userId int) gin.H {
 
 // contributionSubmitRequest is the body of POST /api/contribution/submit.
 type contributionSubmitRequest struct {
-	ChannelType int    `json:"channel_type"`
-	Key         string `json:"key"`
+	// EntryId is the 8-character upstream code of the catalog entry the user picked.
+	// It resolves to the enabled entry that names the host channel and the reward
+	// plan; the provider channel-type number is no longer a submission input.
+	EntryId string `json:"entry_id"`
+	Key     string `json:"key"`
 	// Agreed is the server-side half of the consent control. The checkbox is only
 	// the user-facing gate; consent is enforced here so a crafted request cannot
 	// skip it.
@@ -472,11 +503,12 @@ func SubmitContribution(c *gin.Context) {
 		contributionReject(c, contributionCodeGlobalDisabled, "the contribution feature is disabled")
 		return
 	}
-	// The enabled entry of this channel type: a disabled one never owns a
-	// submission, so an admin who disabled A and enabled B has B resolve here.
-	entry, found := contribution_setting.EntryByChannelType(request.ChannelType)
+	// The enabled entry of this upstream code: a disabled or deleted entry never
+	// owns a submission, so an admin who disabled A and enabled B has B resolve
+	// here.
+	entry, found := contribution_setting.EntryByCode(request.EntryId)
 	if !found {
-		contributionReject(c, contributionCodeTypeUnknown, fmt.Sprintf("channel type %d is not open for contribution", request.ChannelType))
+		contributionReject(c, contributionCodeEntryUnknown, fmt.Sprintf("entry %s is not open for contribution", request.EntryId))
 		return
 	}
 
@@ -552,7 +584,7 @@ func SubmitContribution(c *gin.Context) {
 			recordContributionSubmitAudit(c, existing, true)
 			common.ApiSuccess(c, gin.H{
 				"contribution": contributionSummary(c, existing, subscription, map[int]string{}),
-				"reward":       contributionRewardSummary(subscription, entry.ChannelType, plan.Title),
+				"reward":       contributionRewardSummary(subscription, entry.Code, plan.Title),
 				"redundant":    false,
 			})
 			return
@@ -579,23 +611,25 @@ func SubmitContribution(c *gin.Context) {
 	}
 
 	// "One upstream counts once": a user who already holds a live contribution for
-	// this channel type that was actually rewarded gets no second reward, but the
-	// key still widens the pool. The query requires the reward to exist
-	// (reward_granted and a subscription instance), so an active record whose grant
-	// failed never makes a later submission redundant; a dead or revoked
-	// predecessor does not block a fresh grant either.
+	// this catalog entry (upstream code) that was actually rewarded gets no second
+	// reward, but the key still widens the pool. The query requires the reward to
+	// exist (reward_granted and a subscription instance), so an active record whose
+	// grant failed never makes a later submission redundant; a dead or revoked
+	// predecessor does not block a fresh grant either. Two entries that happen to
+	// back the same provider channel type are two upstreams and reward separately.
 	rewardGranted := true
-	if hasRewarded, err := model.HasRewardedActiveContributionForType(userId, entry.ChannelType); err != nil {
+	if hasRewarded, err := model.HasRewardedActiveContributionForCode(userId, entry.Code); err != nil {
 		// A failed lookup is logged, not guessed at: the submission still grants
 		// (the grant itself is idempotent per record), and the failure leaves a
 		// trace instead of silently changing the reward decision.
-		common.SysError(fmt.Sprintf("failed to read rewarded contributions of user %d for channel type %d: %v", userId, entry.ChannelType, err))
+		common.SysError(fmt.Sprintf("failed to read rewarded contributions of user %d for entry %s: %v", userId, entry.Code, err))
 	} else if hasRewarded {
 		rewardGranted = false
 	}
 
 	contribution := &model.Contribution{
 		UserId:         userId,
+		EntryCode:      entry.Code,
 		ChannelType:    entry.ChannelType,
 		HostChannelId:  hostChannel.Id,
 		KeyFingerprint: common.GetPointer(fingerprint),
@@ -641,7 +675,7 @@ func SubmitContribution(c *gin.Context) {
 
 	common.ApiSuccess(c, gin.H{
 		"contribution": contributionSummary(c, contribution, rewardSubscription, map[int]string{}),
-		"reward":       contributionRewardSummary(rewardSubscription, entry.ChannelType, plan.Title),
+		"reward":       contributionRewardSummary(rewardSubscription, entry.Code, plan.Title),
 		"redundant":    !rewardGranted,
 	})
 }
@@ -650,12 +684,12 @@ func SubmitContribution(c *gin.Context) {
 // contribution just produced: which channel type earned it, which plan, how much
 // of it is left, and until when. It is nil when nothing was granted, so the
 // frontend renders no reward instead of an invented one.
-func contributionRewardSummary(subscription *model.UserSubscription, channelType int, planTitle string) gin.H {
+func contributionRewardSummary(subscription *model.UserSubscription, entryCode string, planTitle string) gin.H {
 	summary := contributionSubscriptionSummary(subscription, planTitle)
 	if summary == nil {
 		return nil
 	}
-	summary["channel_type"] = channelType
+	summary["entry_code"] = entryCode
 	summary["subscription_id"] = subscription.Id
 	return summary
 }
@@ -709,8 +743,9 @@ func contributionSummary(c *gin.Context, contribution *model.Contribution, subsc
 	}
 	return gin.H{
 		"id":                  contribution.Id,
+		"entry_code":          contribution.EntryCode,
 		"channel_type":        contribution.ChannelType,
-		"channel_type_name":   service.ContributionUpstreamName(contribution.ChannelType, i18n.GetLangFromContext(c)),
+		"channel_type_name":   service.ContributionUpstreamName(contribution, i18n.GetLangFromContext(c)),
 		"status":              contribution.Status,
 		"reason":              contribution.Reason,
 		"reason_time":         contribution.ReasonTime,
@@ -729,11 +764,11 @@ func contributionSummary(c *gin.Context, contribution *model.Contribution, subsc
 // recover a credential.
 func recordContributionGrantAudit(c *gin.Context, contribution *model.Contribution, planId, subscriptionId int) {
 	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
-		fmt.Sprintf("Granted the contribution reward for channel type %d", contribution.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
+		fmt.Sprintf("Granted the contribution reward for entry %s", contribution.EntryCode), auditOperatorInfo(c), &model.AuditOperation{
 			Action: "contribution.grant",
 			Params: model.AuditFields{
 				"contribution_id": contribution.Id,
-				"channel_type":    contribution.ChannelType,
+				"entry_code":      contribution.EntryCode,
 				"plan_id":         planId,
 				"subscription_id": subscriptionId,
 			},
@@ -744,11 +779,11 @@ func recordContributionGrantAudit(c *gin.Context, contribution *model.Contributi
 // including the consent statement the contributor accepted at that moment.
 func recordContributionSubmitAudit(c *gin.Context, contribution *model.Contribution, rewardGranted bool) {
 	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
-		fmt.Sprintf("Submitted an upstream key for channel type %d", contribution.ChannelType), auditOperatorInfo(c), &model.AuditOperation{
+		fmt.Sprintf("Submitted an upstream key for entry %s", contribution.EntryCode), auditOperatorInfo(c), &model.AuditOperation{
 			Action: "contribution.submit",
 			Params: model.AuditFields{
 				"contribution_id": contribution.Id,
-				"channel_type":    contribution.ChannelType,
+				"entry_code":      contribution.EntryCode,
 				"host_channel_id": contribution.HostChannelId,
 				"reward_granted":  rewardGranted,
 				"agreement":       contribution.Agreement,
@@ -897,12 +932,12 @@ func respondWithRevokedContribution(c *gin.Context, contributionId int) {
 // recover a credential.
 func recordContributionRevokeAudit(c *gin.Context, contribution *model.Contribution) {
 	model.RecordLogWithAdminInfo(contribution.UserId, model.LogTypeManage,
-		fmt.Sprintf("Revoked the contributed upstream key of channel type %d", contribution.ChannelType),
+		fmt.Sprintf("Revoked the contributed upstream key of entry %s", contribution.EntryCode),
 		auditOperatorInfo(c), &model.AuditOperation{
 			Action: "contribution.revoke",
 			Params: model.AuditFields{
 				"contribution_id": contribution.Id,
-				"channel_type":    contribution.ChannelType,
+				"entry_code":      contribution.EntryCode,
 				"host_channel_id": contribution.HostChannelId,
 			},
 		}, c)
