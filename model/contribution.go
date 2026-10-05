@@ -116,10 +116,16 @@ func IsContributionKeyDead(httpStatusCode int) bool {
 // It is tracked by key fingerprint and never by the key's index inside the host
 // channel: deleting one key renumbers every later key, the fingerprint does not.
 type Contribution struct {
-	Id            int `json:"id" gorm:"primaryKey"`
-	UserId        int `json:"user_id" gorm:"index"`
-	ChannelType   int `json:"channel_type" gorm:"index"`
-	HostChannelId int `json:"host_channel_id"`
+	Id     int `json:"id" gorm:"primaryKey"`
+	UserId int `json:"user_id" gorm:"index"`
+	// EntryCode is the durable user-facing identity of the catalog entry this
+	// contribution feeds: the 8-character upstream code. Reward de-dup and the
+	// "distinct upstreams" count aggregate on it, so two entries that happen to
+	// back the same provider channel type stay two independent upstreams. The
+	// field is indexed but not unique: several keys of one upstream are allowed.
+	EntryCode     string `json:"entry_code" gorm:"size:16;index"`
+	ChannelType   int    `json:"channel_type" gorm:"index"`
+	HostChannelId int    `json:"host_channel_id"`
 	// KeyFingerprint is nil once the fingerprint is released (revoke). NULLs
 	// never collide in a unique index on SQLite, MySQL or PostgreSQL, so a
 	// released fingerprint becomes submittable again while the row is retained
@@ -139,7 +145,7 @@ type Contribution struct {
 	SubscriptionId int    `json:"subscription_id"`
 	Status         string `json:"status" gorm:"size:16;index"`
 	// RewardGranted is false when the submission was accepted as redundant: the
-	// user already holds an active contribution for this channel type.
+	// user already holds an active contribution for this catalog entry.
 	RewardGranted bool   `json:"reward_granted"`
 	Reason        string `json:"reason" gorm:"size:64"`
 	ReasonTime    int64  `json:"reason_time"`
@@ -220,33 +226,35 @@ func GetContributionsByUser(userId int) ([]Contribution, error) {
 	return contributions, nil
 }
 
-// GetActiveContributionsByUserAndType returns the user's live contributions for
-// one channel type. "One upstream counts once" means at most one reward is
-// granted per channel type, so a submission that finds a row here is redundant.
-func GetActiveContributionsByUserAndType(userId, channelType int) ([]Contribution, error) {
+// GetActiveContributionsByUserAndEntryCode returns the user's live contributions
+// for one catalog entry (upstream code). "One upstream counts once" means at most
+// one reward is granted per entry, so a submission that finds a row here is
+// redundant.
+func GetActiveContributionsByUserAndEntryCode(userId int, entryCode string) ([]Contribution, error) {
 	contributions := make([]Contribution, 0)
-	if err := DB.Where("user_id = ? AND channel_type = ? AND status = ?", userId, channelType, ContributionStatusActive).
+	if err := DB.Where("user_id = ? AND entry_code = ? AND status = ?", userId, entryCode, ContributionStatusActive).
 		Find(&contributions).Error; err != nil {
 		return nil, err
 	}
 	return contributions, nil
 }
 
-// HasActiveContributionForType reports whether the user already holds a live
-// contribution for this channel type. "One upstream counts once" makes such a
-// submission redundant: the key still widens the pool, but no second reward is
-// granted. excludeId lets a caller ignore the record it is about to judge; pass 0
-// when the caller is deciding whether a brand new submission is redundant. Dead
-// and revoked contributions are not active, so they never block a fresh grant.
-func HasActiveContributionForType(userId, channelType, excludeId int) (bool, error) {
+// HasActiveContributionForCode reports whether the user already holds a live
+// contribution for this catalog entry (upstream code). "One upstream counts once"
+// makes such a submission redundant: the key still widens the pool, but no second
+// reward is granted. excludeId lets a caller ignore the record it is about to
+// judge; pass 0 when the caller is deciding whether a brand new submission is
+// redundant. Dead and revoked contributions are not active, so they never block a
+// fresh grant.
+func HasActiveContributionForCode(userId int, entryCode string, excludeId int) (bool, error) {
 	if userId <= 0 {
 		return false, errors.New("invalid user id")
 	}
-	if channelType <= 0 {
-		return false, errors.New("invalid channel type")
+	if strings.TrimSpace(entryCode) == "" {
+		return false, errors.New("invalid entry code")
 	}
 	query := DB.Model(&Contribution{}).
-		Where("user_id = ? AND channel_type = ? AND status = ?", userId, channelType, ContributionStatusActive)
+		Where("user_id = ? AND entry_code = ? AND status = ?", userId, entryCode, ContributionStatusActive)
 	if excludeId > 0 {
 		query = query.Where("id <> ?", excludeId)
 	}
@@ -257,26 +265,27 @@ func HasActiveContributionForType(userId, channelType, excludeId int) (bool, err
 	return count > 0, nil
 }
 
-// HasRewardedActiveContributionForType reports whether the user already holds a
-// live contribution for this channel type that was actually rewarded - the record
-// carries RewardGranted and points at a subscription instance.
+// HasRewardedActiveContributionForCode reports whether the user already holds a
+// live contribution for this catalog entry (upstream code) that was actually
+// rewarded - the record carries RewardGranted and points at a subscription
+// instance.
 //
 // "One upstream counts once" must be judged on a reward that exists, not on a row
 // that merely promised one: a submission whose reward grant failed leaves an
 // active, unrewarded record, and treating that as "already rewarded" would lock
 // the contributor out of the reward forever. An unrewarded active record therefore
 // never fails this query.
-func HasRewardedActiveContributionForType(userId, channelType int) (bool, error) {
+func HasRewardedActiveContributionForCode(userId int, entryCode string) (bool, error) {
 	if userId <= 0 {
 		return false, errors.New("invalid user id")
 	}
-	if channelType <= 0 {
-		return false, errors.New("invalid channel type")
+	if strings.TrimSpace(entryCode) == "" {
+		return false, errors.New("invalid entry code")
 	}
 	var count int64
 	if err := DB.Model(&Contribution{}).
-		Where("user_id = ? AND channel_type = ? AND status = ? AND reward_granted = ? AND subscription_id > 0",
-			userId, channelType, ContributionStatusActive, true).
+		Where("user_id = ? AND entry_code = ? AND status = ? AND reward_granted = ? AND subscription_id > 0",
+			userId, entryCode, ContributionStatusActive, true).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -305,22 +314,23 @@ func HasDeadContributionForKeyHash(keyHash string) (bool, error) {
 	return count > 0, nil
 }
 
-// CountActiveContributionChannelTypes counts the distinct channel types a user
-// currently holds a live contribution for: "how many upstreams this account has
-// already brought in".
+// CountActiveContributionEntryCodes counts the distinct catalog entries (upstream
+// codes) a user currently holds a live contribution for: "how many upstreams this
+// account has already brought in".
 //
-// It counts distinct channel types rather than records because one upstream counts
-// once: several live keys of the same type are one reward and therefore one
-// upstream. Dead and revoked contributions are excluded, so the number falls back
-// when a contribution ends.
-func CountActiveContributionChannelTypes(userId int) (int, error) {
+// It counts distinct entry codes rather than records because one upstream counts
+// once: several live keys of one catalog entry are one reward and therefore one
+// upstream. Two entries that happen to back the same provider channel type each
+// count as their own upstream. Dead and revoked contributions are excluded, so the
+// number falls back when a contribution ends.
+func CountActiveContributionEntryCodes(userId int) (int, error) {
 	if userId <= 0 {
 		return 0, errors.New("invalid user id")
 	}
 	var count int64
 	if err := DB.Model(&Contribution{}).
 		Where("user_id = ? AND status = ?", userId, ContributionStatusActive).
-		Distinct("channel_type").
+		Distinct("entry_code").
 		Count(&count).Error; err != nil {
 		return 0, err
 	}

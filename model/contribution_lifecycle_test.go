@@ -163,6 +163,7 @@ func TestContributionRedundancyRequiresAGrantedReward(t *testing.T) {
 
 	failed := &Contribution{
 		UserId:         901,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  1,
 		KeyFingerprint: common.GetPointer("fp-unrewarded"),
@@ -174,21 +175,22 @@ func TestContributionRedundancyRequiresAGrantedReward(t *testing.T) {
 	}
 	require.NoError(t, failed.Create())
 
-	hasRewarded, err := HasRewardedActiveContributionForType(901, 1)
+	hasRewarded, err := HasRewardedActiveContributionForCode(901, "ABCDEFGH")
 	require.NoError(t, err)
 	assert.False(t, hasRewarded, "an unrewarded active record must not make a later submission redundant")
 
-	// Attaching the instance the failed grant should have produced makes the channel
-	// type actually rewarded, which is the state the rule keys on.
+	// Attaching the instance the failed grant should have produced makes the entry
+	// actually rewarded, which is the state the rule keys on.
 	require.NoError(t, DB.Model(&Contribution{}).Where("id = ?", failed.Id).Update("subscription_id", 4242).Error)
-	hasRewarded, err = HasRewardedActiveContributionForType(901, 1)
+	hasRewarded, err = HasRewardedActiveContributionForCode(901, "ABCDEFGH")
 	require.NoError(t, err)
 	assert.True(t, hasRewarded)
 
 	// A redundant record was never promised a reward, so it does not count either,
-	// and another channel type is judged on its own.
+	// and another entry is judged on its own.
 	redundant := &Contribution{
 		UserId:         901,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  1,
 		KeyFingerprint: common.GetPointer("fp-redundant"),
@@ -198,9 +200,9 @@ func TestContributionRedundancyRequiresAGrantedReward(t *testing.T) {
 		RewardGranted:  false,
 	}
 	require.NoError(t, redundant.Create())
-	hasRewarded, err = HasRewardedActiveContributionForType(901, 2)
+	hasRewarded, err = HasRewardedActiveContributionForCode(901, "JKMNPRST")
 	require.NoError(t, err)
-	assert.False(t, hasRewarded, "another channel type is judged separately")
+	assert.False(t, hasRewarded, "another entry is judged separately")
 }
 
 // ContributionKeyMask is the only shape a contributed key may ever be displayed
@@ -331,6 +333,7 @@ func TestContributionPoolingLifecycle(t *testing.T) {
 
 		first := &Contribution{
 			UserId:         101,
+			EntryCode:      "ABCDEFGH",
 			ChannelType:    1,
 			HostChannelId:  host.Id,
 			KeyFingerprint: common.GetPointer(fingerprint),
@@ -362,7 +365,7 @@ func TestContributionPoolingLifecycle(t *testing.T) {
 		assert.Equal(t, first.Id, stored.Id)
 		assert.Equal(t, 101, stored.UserId)
 
-		active, err := GetActiveContributionsByUserAndType(101, 1)
+		active, err := GetActiveContributionsByUserAndEntryCode(101, "ABCDEFGH")
 		require.NoError(t, err)
 		require.Len(t, active, 1)
 		assert.Equal(t, first.Id, active[0].Id)
@@ -571,9 +574,11 @@ func TestContributionTableIsMigratedWithUniqueFingerprint(t *testing.T) {
 	assert.True(t, DB.Migrator().HasIndex("contributed_keys", indexName), "expected unique index %s", indexName)
 }
 
-// "One upstream counts once" is a catalog invariant, not a submission rule: an
-// administrator must not be able to enable two entries of the same channel type.
-func TestContributionCatalogAllowsAtMostOneEnabledEntryPerChannelType(t *testing.T) {
+// "One upstream counts once" is keyed per catalog entry (per code), not per
+// provider channel type: an administrator may open two enabled entries that both
+// back the same provider channel type, and each of them is its own upstream for
+// contribution purposes.
+func TestContributionCatalogAllowsTwoEnabledEntriesPerChannelType(t *testing.T) {
 	// The catalog is normally persisted into the options table by the controller
 	// package, which owns the option writer. This test binary has no options
 	// table, so persistence is captured here and an existing catalog cannot leak
@@ -584,55 +589,78 @@ func TestContributionCatalogAllowsAtMostOneEnabledEntryPerChannelType(t *testing
 	})
 
 	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
-		{Id: 1, ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
-	}))
+		{Id: 1, Code: "ABCDEFGH", ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
+		{Id: 2, Code: "JKMNPRST", ChannelType: 1, Name: "OpenAI reseller", Enabled: true, HostChannelId: 2, PlanId: 2},
+	}), "two enabled entries may share one provider channel type")
 
-	duplicated := []contribution_setting.ContributionEntry{
-		{Id: 1, ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
-		{Id: 2, ChannelType: 1, Name: "OpenAI reseller", Enabled: true, HostChannelId: 2, PlanId: 2},
-	}
-	require.ErrorIs(t, contribution_setting.SaveEntries(duplicated), contribution_setting.ErrChannelTypeTaken)
-	assert.Len(t, contribution_setting.AllEntries(), 1, "the rejected catalog must not be stored")
-
-	// A disabled duplicate is allowed: only enabled entries claim a channel type.
-	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
-		{Id: 1, ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
-		{Id: 3, ChannelType: 1, Name: "OpenAI (disabled)", Enabled: false, HostChannelId: 2, PlanId: 2},
-	}))
-
-	entry, found := contribution_setting.EntryByChannelType(1)
+	first, found := contribution_setting.EntryByCode("ABCDEFGH")
 	require.True(t, found)
-	assert.Equal(t, "OpenAI", entry.Name)
-	assert.Equal(t, 2, len(contribution_setting.AllEntries()))
+	assert.Equal(t, "OpenAI", first.Name)
+	second, found := contribution_setting.EntryByCode("JKMNPRST")
+	require.True(t, found)
+	assert.Equal(t, "OpenAI reseller", second.Name)
+	assert.Len(t, contribution_setting.AllEntries(), 2)
+
+	// The code is the only identity that stays unique: a second entry claiming an
+	// existing code is refused, while a duplicate internal id stays refused too.
+	require.ErrorIs(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
+		{Id: 1, Code: "ABCDEFGH", ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
+		{Id: 3, Code: "ABCDEFGH", ChannelType: 2, Name: "Clone", Enabled: true, HostChannelId: 2, PlanId: 2},
+	}), contribution_setting.ErrEntryCodeDuplicated)
+	assert.Len(t, contribution_setting.AllEntries(), 2, "the rejected catalog must not be stored")
+	require.ErrorIs(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
+		{Id: 1, Code: "ABCDEFGH", ChannelType: 1, Name: "OpenAI", Enabled: true, HostChannelId: 1, PlanId: 1},
+		{Id: 1, Code: "JKMNPRST", ChannelType: 2, Name: "Clone", Enabled: true, HostChannelId: 2, PlanId: 2},
+	}), contribution_setting.ErrEntryIdDuplicated)
 }
 
-// An admin may disable the entry of a channel type and enable another one for the
-// same channel type. Resolution has to follow the enabled entry, not the first
-// stored one: otherwise submit would resolve the disabled entry and refuse a valid
-// open upstream, and a contributor notice would name the wrong upstream.
-func TestContributionEntryByChannelTypeResolvesOnlyEnabledEntries(t *testing.T) {
+// A submission is resolved by the entry's code, and resolution has to follow the
+// enabled entry only: a disabled entry is an admin-side draft, so its code stops
+// resolving and submit refuses it instead of silently pooling into a disabled
+// upstream.
+func TestContributionEntryByCodeResolvesOnlyEnabledEntries(t *testing.T) {
 	contribution_setting.SetOptionWriter(func(string, string) error { return nil })
 	t.Cleanup(func() {
 		require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{}))
 	})
 
 	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
-		{Id: 1, ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
-		{Id: 2, ChannelType: 4, Name: "Enabled B", Enabled: true, HostChannelId: 2, PlanId: 2},
+		{Id: 1, Code: "AAAABBBB", ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
+		{Id: 2, Code: "CCCCDDDD", ChannelType: 4, Name: "Enabled B", Enabled: true, HostChannelId: 2, PlanId: 2},
 	}))
 
-	resolved, found := contribution_setting.EntryByChannelType(4)
+	resolved, found := contribution_setting.EntryByCode("CCCCDDDD")
 	require.True(t, found)
 	assert.Equal(t, "Enabled B", resolved.Name, "the enabled entry resolves, not the disabled first entry")
 	assert.Equal(t, 2, resolved.HostChannelId)
 
-	// With no enabled entry the channel type does not resolve at all, so submit
-	// refuses it and the notice falls back to the channel type name.
+	// With no enabled entry the code does not resolve at all, so submit refuses it
+	// and the notice falls back to the channel type name.
 	require.NoError(t, contribution_setting.SaveEntries([]contribution_setting.ContributionEntry{
-		{Id: 1, ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
+		{Id: 1, Code: "AAAABBBB", ChannelType: 4, Name: "Disabled A", Enabled: false, HostChannelId: 1, PlanId: 1},
 	}))
-	_, found = contribution_setting.EntryByChannelType(4)
-	assert.False(t, found, "a disabled entry never owns a submission")
+	_, found = contribution_setting.EntryByCode("CCCCDDDD")
+	assert.False(t, found, "a removed entry's code stops resolving")
+}
+
+// The entry code is the durable, user-facing identity of an upstream: 8
+// characters drawn from the distinguishable Base32 alphabet (no 0/1/I/O/L), so a
+// user can read a code back without confusing a digit for a letter. Every draw is
+// fresh, so the code namespace is independent of the internal auto-increment id.
+func TestContributionEntryCodeIsGeneratedDistinctAndUnambiguous(t *testing.T) {
+	seen := make(map[string]bool, 100)
+	for range 100 {
+		code, err := contribution_setting.NewEntryCode()
+		require.NoError(t, err)
+		require.Len(t, code, 8)
+		for _, r := range code {
+			require.True(t, (r >= 'A' && r <= 'Z') || (r >= '2' && r <= '9'),
+				"unexpected character %q in code %s", r, code)
+			require.NotContains(t, "01IOL", string(r), "code %s uses an ambiguous character", code)
+		}
+		require.False(t, seen[code], "a generated code must be unique within a draw")
+		seen[code] = true
+	}
 }
 
 // openContributionRewardTestDB hands one test its own shared-cache in-memory
@@ -708,6 +736,7 @@ func TestContributionRewardGrantLifecycle(t *testing.T) {
 
 	contribution := &Contribution{
 		UserId:         contributor.Id,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), contributedKey)),
@@ -756,12 +785,13 @@ func TestContributionRewardGrantLifecycle(t *testing.T) {
 
 	// "One upstream counts once": a second contribution of the same channel type is
 	// redundant and grants no second reward.
-	hasActive, err := HasActiveContributionForType(contributor.Id, 1, 0)
+	hasActive, err := HasActiveContributionForCode(contributor.Id, "ABCDEFGH", 0)
 	require.NoError(t, err)
 	assert.True(t, hasActive, "the channel type already holds an active contribution")
 
 	redundant := &Contribution{
 		UserId:         contributor.Id,
+		EntryCode:      "ABCDEFGH",
 		ChannelType:    1,
 		HostChannelId:  host.Id,
 		KeyFingerprint: common.GetPointer(ContributionKeyFingerprint(host.GetBaseURL(), "sk-contribution-redundant")),

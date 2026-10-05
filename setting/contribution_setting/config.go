@@ -1,8 +1,10 @@
 package contribution_setting
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -27,17 +29,57 @@ const (
 	AgreementText = "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display."
 )
 
+// entryCodeAlphabet is the human-friendly alphabet for auto-assigned upstream
+// codes: the 23 uppercase letters left of the RFC 4648 Base32 alphabet after the
+// confusable characters I, O and L are removed (0 and 1 are not Base32 letters
+// and therefore already absent). Every symbol reads back without guessing whether
+// a character is a digit or a letter.
+const entryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ"
+
+// entryCodeLength is how many symbols a generated upstream code carries. 23^8
+// distinct codes is far beyond any catalog an operator can maintain by hand, so
+// an accidental collision is not a realistic event; the controller still guards
+// against it by rejecting a generated code that already exists.
+const entryCodeLength = 8
+
 // Catalog invariants the admin API has to satisfy before anything is stored.
 var (
-	ErrChannelTypeRequired = errors.New("channel type is required")
 	ErrNameRequired        = errors.New("entry name is required")
 	ErrEntryIdDuplicated   = errors.New("entry id is duplicated")
-	ErrChannelTypeTaken    = errors.New("another enabled entry already uses this channel type")
+	ErrEntryCodeRequired   = errors.New("upstream code is required")
+	ErrEntryCodeInvalid    = errors.New("upstream code is invalid")
+	ErrEntryCodeDuplicated = errors.New("another entry already uses this upstream code")
 )
 
+// NewEntryCode returns a fresh 8-character upstream code drawn uniformly from
+// entryCodeAlphabet. It is a helper because the code is a durable business
+// identity - never regenerated, never reused after an entry is deleted - and
+// every creation site must generate codes the same way.
+func NewEntryCode() (string, error) {
+	alphabetLen := big.NewInt(int64(len(entryCodeAlphabet)))
+	buffer := make([]byte, entryCodeLength)
+	for i := range entryCodeLength {
+		n, err := rand.Int(rand.Reader, alphabetLen)
+		if err != nil {
+			return "", err
+		}
+		buffer[i] = entryCodeAlphabet[n.Int64()]
+	}
+	return string(buffer), nil
+}
+
 // ContributionEntry is one contributable upstream an admin has configured.
+//
+// Code is the durable user-facing identity of the upstream: an 8-character
+// human-friendly code assigned once at creation, never regenerated and never
+// reused after the entry is deleted. The internal Id is an auto-incrementing
+// number for admin-page display and sorting only and must not be used anywhere
+// downstream of "which upstream is this". ChannelType is still stored because
+// the entry is bound to a host channel of a concrete provider type, but it is
+// no longer the identifier used for user-facing resolution or reward de-dup.
 type ContributionEntry struct {
 	Id             int    `json:"id"`
+	Code           string `json:"code"`
 	ChannelType    int    `json:"channel_type"`
 	Name           string `json:"name"`
 	RegisterURL    string `json:"register_url"`
@@ -100,14 +142,14 @@ func EnabledEntries() []ContributionEntry {
 	return enabled
 }
 
-// EntryByChannelType resolves the ENABLED entry that owns a channel type. A
-// disabled entry is an admin-side draft: it must not resolve a submission (the
-// admin may have disabled entry A and enabled entry B for the same channel type,
-// and submit has to follow B) and it must not name the upstream in a contributor
-// notice. Callers that need the whole catalog read AllEntries.
-func EntryByChannelType(channelType int) (ContributionEntry, bool) {
+// EntryByCode resolves the ENABLED entry that owns an upstream code. The code is
+// the durable user-facing identity of a contributable upstream: a disabled entry
+// is an admin-side draft and must not resolve a submission, and a deleted entry
+// has no row at all, so its code never resolves anything. Callers that need the
+// whole catalog read AllEntries.
+func EntryByCode(code string) (ContributionEntry, bool) {
 	for _, entry := range AllEntries() {
-		if entry.ChannelType == channelType && entry.Enabled {
+		if entry.Code == code && entry.Enabled {
 			return entry, true
 		}
 	}
@@ -163,11 +205,8 @@ func parseCatalog(catalog string) []ContributionEntry {
 
 func validateEntries(entries []ContributionEntry) error {
 	ids := make(map[int]bool, len(entries))
-	enabledChannelTypes := make(map[int]bool, len(entries))
+	codes := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		if entry.ChannelType <= 0 {
-			return fmt.Errorf("entry %d: %w", entry.Id, ErrChannelTypeRequired)
-		}
 		if strings.TrimSpace(entry.Name) == "" {
 			return fmt.Errorf("entry %d: %w", entry.Id, ErrNameRequired)
 		}
@@ -175,13 +214,23 @@ func validateEntries(entries []ContributionEntry) error {
 			return fmt.Errorf("entry id %d: %w", entry.Id, ErrEntryIdDuplicated)
 		}
 		ids[entry.Id] = true
-		if !entry.Enabled {
-			continue
+		// The code is the durable user-facing identity, so it must be a well-formed
+		// 8-symbol code and unique across the whole catalog, enabled or not: a
+		// deleted entry's code is never reused elsewhere, and no two live entries
+		// may share one. Channel type is no longer an identity here - two enabled
+		// entries may deliberately share one provider channel type.
+		if strings.TrimSpace(entry.Code) == "" {
+			return fmt.Errorf("entry %d: %w", entry.Id, ErrEntryCodeRequired)
 		}
-		if enabledChannelTypes[entry.ChannelType] {
-			return fmt.Errorf("channel type %d: %w", entry.ChannelType, ErrChannelTypeTaken)
+		if len(entry.Code) != entryCodeLength || strings.IndexFunc(entry.Code, func(r rune) bool {
+			return !strings.ContainsRune(entryCodeAlphabet, r)
+		}) >= 0 {
+			return fmt.Errorf("entry %d: %w", entry.Id, ErrEntryCodeInvalid)
 		}
-		enabledChannelTypes[entry.ChannelType] = true
+		if codes[entry.Code] {
+			return fmt.Errorf("entry code %s: %w", entry.Code, ErrEntryCodeDuplicated)
+		}
+		codes[entry.Code] = true
 	}
 	return nil
 }
