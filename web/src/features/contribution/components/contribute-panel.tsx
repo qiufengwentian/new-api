@@ -61,19 +61,19 @@ export function ContributePanel(props: ContributePanelProps) {
   const { t } = useTranslation()
   const entries = props.catalog.entries
   const firstEntry = entries[0]
-  const firstChannelType = firstEntry ? firstEntry.channel_type : 0
-  const [selectedChannelType, setSelectedChannelType] = useState(firstChannelType)
+  const firstEntryId = firstEntry ? firstEntry.entry_id : ''
+  const [selectedEntryId, setSelectedEntryId] = useState(firstEntryId)
   const schema = getContributionSubmitSchema(t)
   const form = useForm<ContributionSubmitValues>({
     resolver: zodResolver(schema) as unknown as Resolver<ContributionSubmitValues>,
-    defaultValues: { channel_type: firstChannelType, key: '', agreed: false },
+    defaultValues: { entry_id: firstEntryId, key: '', agreed: false },
   })
   const submitMutation = useSubmitContribution()
   const agreed = form.watch('agreed')
   const key = form.watch('key')
   const result = submitMutation.data?.success ? submitMutation.data.data : undefined
   const selected = entries.find(
-    (entry) => entry.channel_type === selectedChannelType
+    (entry) => entry.entry_id === selectedEntryId
   )
 
   if (entries.length === 0) {
@@ -90,9 +90,8 @@ export function ContributePanel(props: ContributePanelProps) {
   }
 
   const handleSelect = (value: string) => {
-    const channelType = Number(value)
-    setSelectedChannelType(channelType)
-    form.setValue('channel_type', channelType, { shouldDirty: true })
+    setSelectedEntryId(value)
+    form.setValue('entry_id', value, { shouldDirty: true })
   }
 
   const submitContribution = form.handleSubmit((values) => {
@@ -100,7 +99,7 @@ export function ContributePanel(props: ContributePanelProps) {
       onSuccess: (response) => {
         if (response.success) {
           // The key is never echoed back, so the form is cleared right away.
-          form.reset({ channel_type: values.channel_type, key: '', agreed: false })
+          form.reset({ entry_id: values.entry_id, key: '', agreed: false })
         }
       },
     })
@@ -117,21 +116,21 @@ export function ContributePanel(props: ContributePanelProps) {
         </CardHeader>
         <CardContent className='flex flex-col gap-3'>
           <RadioGroup
-            value={String(selectedChannelType)}
+            value={selectedEntryId}
             onValueChange={handleSelect}
             aria-label={t('Available upstreams')}
           >
             {entries.map((entry) => {
-              const itemId = `contribution-upstream-${entry.channel_type}`
+              const itemId = `contribution-upstream-${entry.entry_id}`
               return (
                 <Label
-                  key={entry.channel_type}
+                  key={entry.entry_id}
                   htmlFor={itemId}
                   className='hover:border-primary/40 focus-within:border-primary/50 has-data-[checked]:border-primary has-data-[checked]:ring-primary/20 flex cursor-pointer items-center gap-3 rounded-lg border p-3 font-normal transition-all has-data-[checked]:ring-2'
                 >
                   <RadioGroupItem
                     id={itemId}
-                    value={String(entry.channel_type)}
+                    value={entry.entry_id}
                   />
                   <span className='text-sm font-medium'>{entry.name}</span>
                 </Label>

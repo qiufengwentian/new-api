@@ -59,7 +59,7 @@ export function MyContributions() {
   const [revokeTarget, setRevokeTarget] =
     useState<ContributionSummary | null>(null)
   const items = query.data?.items ?? []
-  const channelTypeCount = query.data?.summary.channel_type_count ?? 0
+  const entryCodeCount = query.data?.summary.entry_code_count ?? 0
 
   const columns: StaticDataTableColumn<ContributionSummary>[] = [
     {
@@ -67,7 +67,7 @@ export function MyContributions() {
       header: t('Upstream'),
       cellClassName: 'font-medium',
       cell: (contribution) =>
-        contribution.channel_type_name || `#${contribution.channel_type}`,
+        contribution.channel_type_name || contribution.entry_code,
     },
     {
       id: 'status',
@@ -153,8 +153,8 @@ export function MyContributions() {
       <CardHeader>
         <CardTitle>{t('My contributions')}</CardTitle>
         <CardDescription>
-          {t('You have brought in {{types}} upstream channel types.', {
-            types: channelTypeCount,
+          {t('You have brought in {{count}} upstreams.', {
+            count: entryCodeCount,
           })}
         </CardDescription>
       </CardHeader>
