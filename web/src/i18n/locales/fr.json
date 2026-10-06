@@ -6953,10 +6953,10 @@
     "You revoked this contribution": "Vous avez révoqué cette contribution",
     "Revoked a contributed upstream key": "Clé amont contribuée révoquée",
     "My contributions": "Mes contributions",
-    "You have brought in {{types}} upstream channel types.": "Vous avez apporté {{types}} types de canaux d'amont.",
     "No contributions yet": "Aucune contribution pour le moment",
     "Contribute an upstream key and it will show up here.": "Contribuez une clé d'amont et elle apparaîtra ici.",
     "No reward": "Aucune récompense",
-    "Only a live contribution can be revoked.": "Seule une contribution active peut être révoquée."
+    "Only a live contribution can be revoked.": "Seule une contribution active peut être révoquée.",
+    "You have brought in {{count}} upstreams.": "Vous avez apporté {{count}} amonts."
   }
 }

@@ -6953,10 +6953,10 @@
     "You revoked this contribution": "你撤回了这条贡献",
     "Revoked a contributed upstream key": "撤回了一把贡献的上游 Key",
     "My contributions": "我的贡献",
-    "You have brought in {{types}} upstream channel types.": "你已凑到 {{types}} 个渠道类型",
     "No contributions yet": "暂无贡献",
     "Contribute an upstream key and it will show up here.": "贡献一把上游 Key 后就会显示在这里。",
     "No reward": "无回馈",
-    "Only a live contribution can be revoked.": "只有生效中的贡献可以撤回。"
+    "Only a live contribution can be revoked.": "只有生效中的贡献可以撤回。",
+    "You have brought in {{count}} upstreams.": "你已凑到 {{count}} 个上游"
   }
 }

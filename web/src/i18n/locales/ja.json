@@ -6953,10 +6953,10 @@
     "You revoked this contribution": "この提供を取り消しました",
     "Revoked a contributed upstream key": "提供された上流キーを取り消しました",
     "My contributions": "自分の提供一覧",
-    "You have brought in {{types}} upstream channel types.": "{{types}} 個の上流チャネル種別を獲得しています。",
     "No contributions yet": "まだ提供がありません",
     "Contribute an upstream key and it will show up here.": "上流キーを提供すると、ここに表示されます。",
     "No reward": "特典なし",
-    "Only a live contribution can be revoked.": "有効な提供のみ取り消せます。"
+    "Only a live contribution can be revoked.": "有効な提供のみ取り消せます。",
+    "You have brought in {{count}} upstreams.": "{{count}} 個の上流を獲得しています。"
   }
 }

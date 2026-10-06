@@ -21,7 +21,8 @@ import { z } from 'zod'
 
 /** One upstream an administrator opened for contribution. */
 export interface ContributionCatalogEntry {
-  channel_type: number
+  /** The 8-character upstream code that identifies this entry user-side. */
+  entry_id: string
   name: string
   register_url: string
   key_placeholder: string
@@ -42,7 +43,8 @@ export interface ContributionCatalogResponse {
 
 /** The subscription instance a contribution produced; null when it granted none. */
 export interface ContributionReward {
-  channel_type: number
+  /** The entry code the reward was earned for; present when one was granted. */
+  entry_code: string
   subscription_id: number
   plan_title: string
   amount_total: number
@@ -65,6 +67,10 @@ export interface ContributionSubscription {
 /** One contribution record, as every contribution response returns it. */
 export interface ContributionSummary {
   id: number
+  /** The 8-character upstream code of the catalog entry the key was contributed to. */
+  entry_code: string
+  /** The provider channel-type number the entry's host channel binds to; kept for
+   *  display fallback only, never used as the user-facing identifier. */
   channel_type: number
   channel_type_name: string
   status: string
@@ -80,9 +86,9 @@ export interface ContributionSummary {
   created_time: number
 }
 
-/** The account's contribution tally: channel types that still reward it. */
+/** The account's contribution tally: distinct upstream codes that still reward it. */
 export interface ContributionAccountSummary {
-  channel_type_count: number
+  entry_code_count: number
 }
 
 /** The signed-in user's own contributions plus the account summary. */
@@ -111,9 +117,28 @@ export interface ContributionSubmitResponse {
   data?: ContributionSubmitData
 }
 
+// The upstream code alphabet shared with the backend: the 23 uppercase letters
+// left of the RFC 4648 Base32 alphabet after the confusable characters I, O and L
+// are removed (0 and 1 are not Base32 letters and therefore already absent). Every
+// symbol reads back without guessing whether a character is a digit or a letter.
+const ENTRY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ'
+
+/** The exact length of an auto-assigned upstream code. */
+const ENTRY_CODE_LENGTH = 8
+
+/** True when the value is a well-formed upstream code. */
+function isEntryCode(value: string): boolean {
+  return (
+    value.length === ENTRY_CODE_LENGTH &&
+    [...value].every((char) => ENTRY_CODE_ALPHABET.includes(char))
+  )
+}
+
 export function getContributionSubmitSchema(t: TFunction) {
   return z.object({
-    channel_type: z.number().int().positive(),
+    entry_id: z
+      .string()
+      .refine(isEntryCode, t('Select a valid upstream from the list')),
     key: z.string().trim().min(1, t('Upstream API key is required')),
     agreed: z
       .boolean()

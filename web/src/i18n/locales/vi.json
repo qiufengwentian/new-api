@@ -6953,10 +6953,10 @@
     "You revoked this contribution": "Bạn đã thu hồi đóng góp này",
     "Revoked a contributed upstream key": "Đã thu hồi khóa thượng nguồn đã đóng góp",
     "My contributions": "Đóng góp của tôi",
-    "You have brought in {{types}} upstream channel types.": "Bạn đã mang về {{types}} loại kênh nguồn.",
     "No contributions yet": "Chưa có đóng góp nào",
     "Contribute an upstream key and it will show up here.": "Đóng góp một khóa nguồn và nó sẽ xuất hiện ở đây.",
     "No reward": "Không có phần thưởng",
-    "Only a live contribution can be revoked.": "Chỉ có thể thu hồi đóng góp đang hiệu lực."
+    "Only a live contribution can be revoked.": "Chỉ có thể thu hồi đóng góp đang hiệu lực.",
+    "You have brought in {{count}} upstreams.": "Bạn đã mang về {{count}} nguồn."
   }
 }

@@ -31,8 +31,8 @@ type ContributionResultProps = {
 
 /**
  * Confirms an accepted contribution. The key is only ever shown masked, and the
- * reward reports exactly what was granted: the channel type it was earned for,
- * the plan, the quota consumed and the expiry. A redundant submission renders no
+ * reward reports exactly what was granted: the upstream it was earned for, the
+ * plan, the quota consumed and the expiry. A redundant submission renders no
  * reward, because the server grants none.
  */
 export function ContributionResult(props: ContributionResultProps) {
@@ -59,9 +59,8 @@ export function ContributionResult(props: ContributionResultProps) {
           <div className='space-y-1'>
             <p className='font-medium'>{t('Reward')}</p>
             <p>
-              {t('Channel Type')}:{' '}
-              {contribution.channel_type_name ||
-                `#${contribution.channel_type}`}
+              {t('Upstream')}:{' '}
+              {contribution.channel_type_name || contribution.entry_code}
             </p>
             <p>
               {t('Plan')}: {reward.plan_title} (

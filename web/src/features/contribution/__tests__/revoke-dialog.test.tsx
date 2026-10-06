@@ -33,6 +33,7 @@ vi.mock('../api')
 
 const activeContribution: ContributionSummary = {
   id: 42,
+  entry_code: 'QWERTYAB',
   channel_type: 1,
   channel_type_name: 'OpenAI',
   status: 'active',

@@ -37,13 +37,13 @@ const enabledCatalog: ContributionCatalog = {
   agreement: 'This upstream key will be added to a shared channel.',
   entries: [
     {
-      channel_type: 1,
+      entry_id: 'QWERTYAB',
       name: 'OpenAI',
       register_url: 'https://platform.openai.com/signup',
       key_placeholder: 'sk-...',
     },
     {
-      channel_type: 3,
+      entry_id: 'ZXCVBNM2',
       name: 'Azure',
       register_url: 'https://azure.example/signup',
       key_placeholder: 'azure-...',
@@ -77,6 +77,7 @@ function acceptedSubmission(
     data: {
       contribution: {
         id: 1,
+        entry_code: 'QWERTYAB',
         channel_type: 1,
         channel_type_name: 'OpenAI',
         status: 'active',
@@ -164,7 +165,7 @@ it('clears the key input and shows the reward after a successful submit', async 
   vi.mocked(submitContribution).mockResolvedValue(
     acceptedSubmission({
       reward: {
-        channel_type: 1,
+        entry_code: 'QWERTYAB',
         subscription_id: 9,
         plan_title: 'Pro plan',
         amount_total: 1000,
@@ -179,9 +180,9 @@ it('clears the key input and shows the reward after a successful submit', async 
   await fillAndSubmit()
 
   expect(await screen.findByText('Contribution submitted')).toBeInTheDocument()
-  // The reward reports what was actually granted: the channel type it was earned
+  // The reward reports what was actually granted: the upstream it was earned
   // for, the plan, the quota split and the expiry, plus the subscription status.
-  expect(screen.getByText(/Channel Type/)).toBeInTheDocument()
+  expect(screen.getByText('Upstream: OpenAI')).toBeInTheDocument()
   expect(screen.getByText(/Pro plan/)).toBeInTheDocument()
   // The quota split is rendered through the project quota formatter, not as raw
   // numbers: 250 / 1000 quota units at the default 500000 units per USD.
@@ -190,7 +191,7 @@ it('clears the key input and shows the reward after a successful submit', async 
   expect(screen.getByText('Active')).toBeInTheDocument()
   expect(screen.getByLabelText('Upstream API Key')).toHaveValue('')
   expect(submitContribution).toHaveBeenCalledWith({
-    channel_type: 1,
+    entry_id: 'QWERTYAB',
     key: 'sk-typed',
     agreed: true,
   })

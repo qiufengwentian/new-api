@@ -33,6 +33,7 @@ vi.mock('../api')
 const contributions: ContributionSummary[] = [
   {
     id: 3,
+    entry_code: 'QWERTYAB',
     channel_type: 1,
     channel_type_name: 'OpenAI',
     status: 'active',
@@ -53,6 +54,7 @@ const contributions: ContributionSummary[] = [
   },
   {
     id: 2,
+    entry_code: 'ZXCVBNM2',
     channel_type: 3,
     channel_type_name: 'Azure',
     status: 'dead',
@@ -73,6 +75,7 @@ const contributions: ContributionSummary[] = [
   },
   {
     id: 1,
+    entry_code: 'HJKMPQRS',
     channel_type: 14,
     channel_type_name: 'Anthropic',
     status: 'revoked',
@@ -106,7 +109,7 @@ beforeEach(() => {
 // Every state reads truthfully: the status, the reason it ended and the state of
 // the reward it earned.
 it('renders every contribution state with its reason and reward', async () => {
-  renderList({ items: contributions, summary: { channel_type_count: 1 } })
+  renderList({ items: contributions, summary: { entry_code_count: 1 } })
 
   // The record's own status and its reward's status both read "Active" here.
   const activeRow = await screen.findByRole('row', { name: /OpenAI/ })
@@ -131,17 +134,17 @@ it('renders every contribution state with its reason and reward', async () => {
 // The list only ever shows the display mask the backend stores; the plaintext key
 // is not part of the contract at all.
 it('shows the stored key mask for every record', async () => {
-  renderList({ items: contributions, summary: { channel_type_count: 1 } })
+  renderList({ items: contributions, summary: { entry_code_count: 1 } })
 
   await screen.findByRole('row', { name: /OpenAI/ })
   expect(screen.getAllByText('************')).toHaveLength(3)
 })
 
-it('reports how many upstream channel types already reward the account', async () => {
-  renderList({ items: contributions, summary: { channel_type_count: 2 } })
+it('reports how many upstreams (distinct codes) already reward the account', async () => {
+  renderList({ items: contributions, summary: { entry_code_count: 2 } })
 
   expect(
-    await screen.findByText('You have brought in 2 upstream channel types.')
+    await screen.findByText('You have brought in 2 upstreams.')
   ).toBeInTheDocument()
 })
 
@@ -149,7 +152,7 @@ it('reports how many upstream channel types already reward the account', async (
 // existing confirmation dialog rather than acting on the click alone.
 it('offers the revoke action on a live record only', async () => {
   const user = userEvent.setup()
-  renderList({ items: contributions, summary: { channel_type_count: 1 } })
+  renderList({ items: contributions, summary: { entry_code_count: 1 } })
 
   const activeRow = await screen.findByRole('row', { name: /OpenAI/ })
   const deadRow = screen.getByRole('row', { name: /Azure/ })
@@ -170,7 +173,7 @@ it('offers the revoke action on a live record only', async () => {
 })
 
 it('shows an empty state before the first contribution', async () => {
-  renderList({ items: [], summary: { channel_type_count: 0 } })
+  renderList({ items: [], summary: { entry_code_count: 0 } })
 
   expect(await screen.findByText('No contributions yet')).toBeInTheDocument()
 })

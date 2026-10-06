@@ -26,7 +26,7 @@ import type { StatusVariant } from '@/components/status-badge'
 export const CONTRIBUTION_SUBMIT_REJECTION_MESSAGES: Record<string, string> = {
   contribution_consent_required: 'You must accept the statement before submitting',
   contribution_global_disabled: 'Contributing upstream keys is currently closed.',
-  contribution_channel_type_unknown: 'This upstream is not open for contribution.',
+  contribution_entry_unknown: 'This upstream is not open for contribution.',
   contribution_key_invalid:
     'This upstream key failed validation. Check the key and that it still has quota.',
   contribution_fingerprint_taken:
