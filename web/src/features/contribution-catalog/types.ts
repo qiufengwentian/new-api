@@ -38,6 +38,16 @@ export interface AdminContributionEntry {
   enabled: boolean
   host_channel_id: number
   plan_id: number
+  /**
+   * Host channel name resolved server-side; empty when the bound channel no
+   * longer exists, in which case the table falls back to a localized
+   * deleted/missing marker.
+   */
+  host_channel_name?: string
+  /** Reward plan title resolved server-side; empty when the bound plan is gone. */
+  plan_title?: string
+  /** How many contributed keys are currently active under this entry's code. */
+  contributed_keys?: number
 }
 
 export interface ContributionCatalogData {
