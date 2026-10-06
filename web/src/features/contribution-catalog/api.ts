@@ -35,8 +35,9 @@ export async function getAdminContributionCatalog(): Promise<AdminContributionCa
   return res.data
 }
 
+/** The backend owns the upstream code namespace, so a create body never carries it. */
 export async function createContributionEntry(
-  entry: Omit<AdminContributionEntry, 'id'>
+  entry: Omit<AdminContributionEntry, 'id' | 'code'>
 ): Promise<ContributionCatalogMutationResponse> {
   const res = await api.post('/api/contribution/admin/catalog', entry)
   return res.data

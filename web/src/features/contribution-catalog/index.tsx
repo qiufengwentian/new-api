@@ -21,16 +21,16 @@ import { useTranslation } from 'react-i18next'
 
 import { ErrorState } from '@/components/error-state'
 import { LoadingState } from '@/components/loading-state'
+import { SectionPageLayout } from '@/components/layout'
+import { Switch } from '@/components/ui/switch'
 
-import { SettingsSection } from '../../components/settings-section'
-import { SettingsSwitchField } from '../../components/settings-form-layout'
 import { CatalogEntryDialog } from './components/catalog-entry-dialog'
 import { CatalogTable } from './components/catalog-table'
 import { useAdminContributionCatalog } from './hooks/use-contribution-catalog'
 import { useUpdateContributionGlobal } from './hooks/use-contribution-catalog-mutations'
 import type { AdminContributionEntry } from './types'
 
-export function ContributionCatalogSection() {
+export function ContributionCatalogPage() {
   const { t } = useTranslation()
   const catalogQuery = useAdminContributionCatalog()
   const updateGlobal = useUpdateContributionGlobal()
@@ -55,39 +55,52 @@ export function ContributionCatalogSection() {
     }
   }
 
-  return (
-    <SettingsSection title={t('Contributed Upstreams')}>
-      <SettingsSwitchField
-        controlId='contribution-global-switch'
+  const globalSwitch = (
+    <label className='flex min-w-0 flex-row items-center justify-between gap-4 py-2.5'>
+      <span className='min-w-0 space-y-0.5'>
+        <span className='text-sm font-medium'>{t('Open for contribution')}</span>
+        <span className='text-muted-foreground block text-xs'>
+          {t('While off, no upstream is offered and the user page stays empty.')}
+        </span>
+      </span>
+      <Switch
         checked={catalogQuery.data?.enabled ?? false}
         onCheckedChange={(value) => updateGlobal.mutate(value === true)}
-        label={t('Open for contribution')}
-        description={t(
-          'While off, no upstream is offered and the user page stays empty.'
-        )}
         disabled={updateGlobal.isPending || !catalogQuery.data}
+        aria-label={t('Open for contribution')}
       />
+    </label>
+  )
 
-      {catalogQuery.isLoading ? <LoadingState /> : null}
-      {catalogQuery.isError ? (
-        <ErrorState
-          title={t('Failed to load')}
-          onRetry={() => void catalogQuery.refetch()}
-        />
-      ) : null}
-      {catalogQuery.data ? (
-        <CatalogTable
-          entries={catalogQuery.data.entries}
-          onCreate={handleCreate}
-          onEdit={handleEdit}
-        />
-      ) : null}
+  return (
+    <SectionPageLayout>
+      <SectionPageLayout.Title>{t('Contribution Catalog')}</SectionPageLayout.Title>
+      <SectionPageLayout.Content>
+        <div className='space-y-4'>
+          {globalSwitch}
 
-      <CatalogEntryDialog
-        open={dialogOpen}
-        onOpenChange={handleDialogChange}
-        entry={editingEntry}
-      />
-    </SettingsSection>
+          {catalogQuery.isLoading ? <LoadingState /> : null}
+          {catalogQuery.isError ? (
+            <ErrorState
+              title={t('Failed to load')}
+              onRetry={() => void catalogQuery.refetch()}
+            />
+          ) : null}
+          {catalogQuery.data ? (
+            <CatalogTable
+              entries={catalogQuery.data.entries}
+              onCreate={handleCreate}
+              onEdit={handleEdit}
+            />
+          ) : null}
+        </div>
+
+        <CatalogEntryDialog
+          open={dialogOpen}
+          onOpenChange={handleDialogChange}
+          entry={editingEntry}
+        />
+      </SectionPageLayout.Content>
+    </SectionPageLayout>
   )
 }

@@ -56,7 +56,7 @@ function reportRefusedMutation(response: ContributionCatalogMutationResponse) {
 export function useCreateContributionEntry() {
   const invalidate = useInvalidateContributionCatalog()
   return useMutation({
-    mutationFn: (entry: Omit<AdminContributionEntry, 'id'>) =>
+    mutationFn: (entry: Omit<AdminContributionEntry, 'id' | 'code'>) =>
       createContributionEntry(entry),
     onSuccess: (res) => {
       if (res.success) {

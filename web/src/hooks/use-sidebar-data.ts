@@ -144,6 +144,12 @@ export function useSidebarData(): SidebarData {
             icon: Radio,
           },
           {
+            title: t('Contribution Catalog'),
+            url: '/contribution-catalog',
+            icon: ClipboardList,
+            requiredRole: ROLE.SUPER_ADMIN,
+          },
+          {
             title: t('Models'),
             url: '/models/metadata',
             icon: Box,

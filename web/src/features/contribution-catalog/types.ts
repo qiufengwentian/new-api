@@ -19,11 +19,22 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import { z } from 'zod'
 
-import type { ContributionCatalogEntry } from '@/features/contribution/types'
-
-/** An admin catalog entry adds the fields only the admin API exposes. */
-export interface AdminContributionEntry extends ContributionCatalogEntry {
+/**
+ * An admin catalog entry as the admin API stores and returns it. It deliberately
+ * does not extend the user-side ContributionCatalogEntry (which is keyed by the
+ * user-facing code): the admin shape carries its own internal id, the durable
+ * upstream code, and the binding to the host channel and reward plan.
+ */
+export interface AdminContributionEntry {
   id: number
+  /** Durable user-facing upstream identity, auto-assigned by the backend. */
+  code: string
+  /** Provider channel type of the bound host channel (display only, not identity).
+   * The admin form no longer picks one; the backend derives it from the host channel. */
+  channel_type?: number
+  name: string
+  register_url: string
+  key_placeholder: string
   enabled: boolean
   host_channel_id: number
   plan_id: number
@@ -47,7 +58,6 @@ export interface ContributionCatalogMutationResponse {
 
 export function getContributionEntryFormSchema(t: TFunction) {
   return z.object({
-    channel_type: z.number().int().positive(t('Channel type is required')),
     name: z.string().trim().min(1, t('Name is required')),
     register_url: z.string().trim(),
     key_placeholder: z.string().trim(),

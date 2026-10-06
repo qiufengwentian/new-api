@@ -44,15 +44,14 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { getChannels } from '@/features/channels/api'
-import { CHANNEL_TYPE_OPTIONS } from '@/features/channels/constants'
 import { getAdminPlans } from '@/features/subscriptions/api'
-import { requireServerSuccess } from '@/lib/server-error-message'
-
 import {
   SettingsForm,
   SettingsSwitchContent,
   SettingsSwitchItem,
-} from '../../../components/settings-form-layout'
+} from '@/features/system-settings/components/settings-form-layout'
+import { requireServerSuccess } from '@/lib/server-error-message'
+
 import {
   useCreateContributionEntry,
   useUpdateContributionEntry,
@@ -72,7 +71,6 @@ type CatalogEntryDialogProps = {
 const ENTRY_FORM_ID = 'contribution-catalog-entry-form'
 
 const EMPTY_ENTRY: ContributionEntryFormValues = {
-  channel_type: CHANNEL_TYPE_OPTIONS[0].value,
   name: '',
   register_url: '',
   key_placeholder: '',
@@ -83,7 +81,6 @@ const EMPTY_ENTRY: ContributionEntryFormValues = {
 
 function entryFormValues(entry: AdminContributionEntry): ContributionEntryFormValues {
   return {
-    channel_type: entry.channel_type,
     name: entry.name,
     register_url: entry.register_url,
     key_placeholder: entry.key_placeholder,
@@ -132,7 +129,7 @@ export function CatalogEntryDialog(props: CatalogEntryDialogProps) {
 
   const onSubmit = async (values: ContributionEntryFormValues) => {
     if (isEditing && props.entry) {
-      const res = await updateEntry.mutateAsync({ ...values, id: props.entry.id })
+      const res = await updateEntry.mutateAsync({ ...values, id: props.entry.id, code: props.entry.code })
       if (res.success) {
         props.onOpenChange(false)
       }
@@ -152,7 +149,7 @@ export function CatalogEntryDialog(props: CatalogEntryDialogProps) {
       onOpenChange={props.onOpenChange}
       title={isEditing ? t('Edit upstream') : t('Add upstream')}
       description={t(
-        'A contributable upstream binds one channel type to the multi-key host channel and reward plan that receive user keys.'
+        'A contributable upstream binds the multi-key host channel and reward plan that receive user keys.'
       )}
       contentClassName='max-h-[min(85dvh,var(--dialog-available-height))] overflow-y-auto sm:max-w-2xl'
       contentHeight='auto'
@@ -175,40 +172,6 @@ export function CatalogEntryDialog(props: CatalogEntryDialogProps) {
     >
       <Form {...form}>
         <SettingsForm id={ENTRY_FORM_ID} onSubmit={form.handleSubmit(onSubmit)}>
-          <FormField
-            control={form.control}
-            name='channel_type'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Channel Type')}</FormLabel>
-                <Select
-                  items={CHANNEL_TYPE_OPTIONS}
-                  value={String(field.value)}
-                  onValueChange={(value) => field.onChange(Number(value))}
-                >
-                  <FormControl>
-                    <SelectTrigger className='w-full'>
-                      <SelectValue />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent alignItemWithTrigger={false}>
-                    <SelectGroup>
-                      {CHANNEL_TYPE_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={String(option.value)}>
-                          {t(option.label)}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-                <FormDescription>
-                  {t('One enabled entry per channel type; the reward unit is the channel type.')}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
           <FormField
             control={form.control}
             name='name'

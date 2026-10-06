@@ -26,7 +26,6 @@ import { StaticRowActions } from '@/components/data-table/static/static-row-acti
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { getChannelTypeLabel } from '@/features/channels/lib/channel-utils'
 
 import {
   useDeleteContributionEntry,
@@ -74,9 +73,9 @@ export function CatalogTable(props: CatalogTableProps) {
         emptyContent={t('No upstream is open for contribution right now.')}
         columns={[
           {
-            id: 'channel-type',
-            header: t('Channel Type'),
-            cell: (entry) => t(getChannelTypeLabel(entry.channel_type)),
+            id: 'id',
+            header: t('ID'),
+            cell: (entry) => entry.id,
           },
           {
             id: 'name',

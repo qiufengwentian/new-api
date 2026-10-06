@@ -24,8 +24,6 @@ export const CONTRIBUTION_REJECTION_MESSAGES: Record<string, string> = {
   contribution_host_channel_not_found: 'Host channel not found',
   contribution_channel_not_multi_key: 'Host channel must be a multi-key channel',
   contribution_plan_not_found: 'Subscription plan not found',
-  contribution_channel_type_taken:
-    'Another enabled entry already uses this channel type',
 }
 
 /**
