@@ -486,25 +486,51 @@ func TestMultiKeySetChannelKeyStatusRejectsUnknownKey(t *testing.T) {
 }
 
 // keyProbeUpstream stands in for the channel's upstream in the key-probe
-// pipeline test: it records the credentials and payload the pipeline sends and
-// answers the minimal chat request with a valid completion.
+// pipeline test: it records the credentials and payload the pipeline sends,
+// tracks the peak number of simultaneous requests, and answers the minimal
+// chat request with a valid completion. Requests carrying one of the failing
+// credentials get a 401 invalid_api_key instead.
 type keyProbeUpstream struct {
 	server *httptest.Server
 
-	mu             sync.Mutex
-	authorizations []string
-	bodies         []string
+	mu                 sync.Mutex
+	authorizations     []string
+	bodies             []string
+	inFlight           int
+	peakInFlight       int
+	failingCredentials map[string]struct{}
 }
 
-func newKeyProbeUpstream(t *testing.T) *keyProbeUpstream {
+func newKeyProbeUpstream(t *testing.T, failingCredentials ...string) *keyProbeUpstream {
 	t.Helper()
-	upstream := &keyProbeUpstream{}
+	failing := make(map[string]struct{}, len(failingCredentials))
+	for _, credential := range failingCredentials {
+		failing[credential] = struct{}{}
+	}
+	upstream := &keyProbeUpstream{failingCredentials: failing}
 	upstream.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		upstream.mu.Lock()
+		upstream.inFlight++
+		if upstream.inFlight > upstream.peakInFlight {
+			upstream.peakInFlight = upstream.inFlight
+		}
 		upstream.authorizations = append(upstream.authorizations, r.Header.Get("Authorization"))
 		upstream.bodies = append(upstream.bodies, string(body))
+		credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		_, fails := upstream.failingCredentials[credential]
 		upstream.mu.Unlock()
+		defer func() {
+			upstream.mu.Lock()
+			upstream.inFlight--
+			upstream.mu.Unlock()
+		}()
+		if fails {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"Invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`))
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-key-probe","object":"chat.completion","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`))
@@ -514,6 +540,14 @@ func newKeyProbeUpstream(t *testing.T) *keyProbeUpstream {
 	}))
 	t.Cleanup(upstream.server.Close)
 	return upstream
+}
+
+// peakInFlightCount reports the largest number of simultaneous upstream
+// requests the probe pipeline opened against this server.
+func (u *keyProbeUpstream) peakInFlightCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.peakInFlight
 }
 
 func (u *keyProbeUpstream) recorded() (authorizations, bodies []string) {
@@ -913,4 +947,158 @@ func TestChannelProbeKeyPersistsErrorHealthForFailingUpstream(t *testing.T) {
 	require.NoError(t, database.Select("quota, used_quota").First(&user, "id = ?", root.Id).Error)
 	assert.Zero(t, user.Quota)
 	assert.Zero(t, user.UsedQuota)
+}
+
+// probeAllKeysEnvelope is the parsed response of the batch key probe endpoint.
+type probeAllKeysEnvelope struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    *struct {
+		Keys []struct {
+			KeyIndex int                    `json:"key_index"`
+			Probe    model.ChannelKeyHealth `json:"probe"`
+		} `json:"keys"`
+		Summary struct {
+			Tested      int `json:"tested"`
+			Available   int `json:"available"`
+			Unavailable int `json:"unavailable"`
+		} `json:"summary"`
+	} `json:"data"`
+}
+
+// callProbeAllKeys drives the batch key probe handler and returns the parsed
+// envelope.
+func callProbeAllKeys(t *testing.T, root *model.User, channelId int) probeAllKeysEnvelope {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channelId)}}
+	c.Set("id", root.Id)
+	c.Set("role", common.RoleRootUser)
+	c.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/%d/probe_all_keys", channelId), http.NoBody)
+	ProbeAllChannelKeys(c)
+	var envelope probeAllKeysEnvelope
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &envelope))
+	return envelope
+}
+
+// The batch key probe covers every key of the channel (disabled keys
+// included), caps the peak concurrency, persists one health entry per key,
+// records one 模型测试 log row per successful probe, and never bills the user.
+func TestChannelProbeAllKeysPersistsPerKeyHealthWithCappedConcurrency(t *testing.T) {
+	database, root := setupMultiKeyTestChannelDB(t)
+	withSelfUseModeEnabled(t)
+	service.InitHttpClient()
+	upstream := newKeyProbeUpstream(t, "sk-key-b", "sk-key-e")
+
+	channel := &model.Channel{
+		Name:    "key-probe-all",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b\nsk-key-c\nsk-key-d\nsk-key-e\nsk-key-f\nsk-key-g",
+		BaseURL: &upstream.server.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       7,
+			MultiKeyStatusList: map[int]int{3: common.ChannelStatusManuallyDisabled},
+		},
+	}
+	require.NoError(t, channel.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, channel.Delete())
+		model.InitChannelCache()
+	})
+
+	envelope := callProbeAllKeys(t, root, channel.Id)
+	require.True(t, envelope.Success, "batch probe failed: %+v", envelope)
+	require.NotNil(t, envelope.Data)
+	require.Len(t, envelope.Data.Keys, 7)
+
+	wantResults := map[int]struct {
+		result    string
+		errorCode string
+	}{
+		0: {result: model.ChannelKeyHealthResultOK},
+		1: {result: model.ChannelKeyHealthResultError, errorCode: "invalid_api_key"},
+		2: {result: model.ChannelKeyHealthResultOK},
+		3: {result: model.ChannelKeyHealthResultOK},
+		4: {result: model.ChannelKeyHealthResultError, errorCode: "invalid_api_key"},
+		5: {result: model.ChannelKeyHealthResultOK},
+		6: {result: model.ChannelKeyHealthResultOK},
+	}
+	for i, probed := range envelope.Data.Keys {
+		require.Equal(t, i, probed.KeyIndex, "results must stay aligned with the key list")
+		want := wantResults[i]
+		assert.Equal(t, want.result, probed.Probe.Result, "key %d", i)
+		assert.Equal(t, want.errorCode, probed.Probe.ErrorCode, "key %d", i)
+		assert.NotZero(t, probed.Probe.LastProbeAt, "key %d", i)
+	}
+	assert.Equal(t, 7, envelope.Data.Summary.Tested)
+	assert.Equal(t, 5, envelope.Data.Summary.Available)
+	assert.Equal(t, 2, envelope.Data.Summary.Unavailable)
+
+	// Every key — the manually disabled one included — reached the upstream
+	// exactly once, and no more keys than the channel carries were probed.
+	authorizations, _ := upstream.recorded()
+	require.Len(t, authorizations, 7)
+	seen := map[string]bool{}
+	for _, authorization := range authorizations {
+		seen[strings.TrimPrefix(authorization, "Bearer ")] = true
+	}
+	for _, key := range channel.GetKeys() {
+		assert.True(t, seen[key], "key %s must have been probed", key)
+	}
+	// The batch caps its peak concurrency: a large key list must not open
+	// unbounded upstream connections.
+	assert.LessOrEqual(t, upstream.peakInFlightCount(), 5, "the batch must never exceed its concurrency cap")
+
+	// Each finished probe persisted its health entry, aligned to the key list.
+	loaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	for keyIndex, want := range wantResults {
+		health, ok := loaded.GetMultiKeyKeyHealth(keyIndex)
+		require.True(t, ok, "key %d must have a persisted health entry", keyIndex)
+		assert.Equal(t, want.result, health.Result, "key %d", keyIndex)
+		assert.Equal(t, want.errorCode, health.ErrorCode, "key %d", keyIndex)
+	}
+
+	// Successful probes record one 模型测试 log row each, attributed to the
+	// probed key row; failed probes record none.
+	var probeLogs []model.Log
+	require.NoError(t, database.Model(&model.Log{}).
+		Where("user_id = ? AND token_name = ? AND channel_id = ?", root.Id, "模型测试", channel.Id).
+		Find(&probeLogs).Error)
+	require.Len(t, probeLogs, 5)
+	probedPerIndex := map[string]int{}
+	for _, logRow := range probeLogs {
+		adminInfo := unmarshalLogOtherAdminInfo(t, logRow.Other)
+		require.Contains(t, adminInfo, "multi_key_index", "each 模型测试 row must point at its probed key")
+		probedPerIndex[fmt.Sprintf("%v", adminInfo["multi_key_index"])]++
+	}
+	assert.Equal(t, map[string]int{"0": 1, "2": 1, "3": 1, "5": 1, "6": 1}, probedPerIndex)
+
+	var user model.User
+	require.NoError(t, database.Select("quota, used_quota").First(&user, "id = ?", root.Id).Error)
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.UsedQuota)
+}
+
+// Endpoint-level failures of the batch key probe fall back to the established
+// envelope: a missing channel and a non-multi-key channel fail before any key
+// is probed.
+func TestChannelProbeAllKeysFallsBackOnEndpointFailures(t *testing.T) {
+	_, root := setupMultiKeyTestChannelDB(t)
+
+	missing := callProbeAllKeys(t, root, 424242)
+	assert.False(t, missing.Success)
+	assert.Equal(t, "渠道不存在", missing.Message)
+	assert.Nil(t, missing.Data)
+
+	singleKey := newMultiKeyTestChannel(t, "only-key", model.ChannelInfo{})
+	envelope := callProbeAllKeys(t, root, singleKey.Id)
+	assert.False(t, envelope.Success)
+	assert.Equal(t, "该渠道不是多密钥模式", envelope.Message)
+	assert.Nil(t, envelope.Data)
 }
