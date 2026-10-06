@@ -27,8 +27,20 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { KeyStatus, ProbeAllKeysResponse, ProbeKeyResponse } from '../../types'
+import type {
+  KeyStatus,
+  ProbeAllKeysResponse,
+  ProbeKeyResponse,
+} from '../../types'
 import { MultiKeyManageDialog } from '../dialogs/multi-key-manage-dialog'
+
+// The per-row copy control funnels through the shared clipboard util; mock
+// that seam so the test asserts the copied value without browser clipboard
+// support.
+const copyToClipboardMock = vi.hoisted(() => vi.fn(async () => true))
+vi.mock('@/lib/copy-to-clipboard', () => ({
+  copyToClipboard: copyToClipboardMock,
+}))
 
 const fixtures = vi.hoisted(() => {
   const channel = {
@@ -192,6 +204,8 @@ function renderDialog() {
 
 beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  copyToClipboardMock.mockReset()
+  copyToClipboardMock.mockResolvedValue(true)
   useAuthStore.setState({
     auth: {
       ...originalAuth,
@@ -435,6 +449,250 @@ it('falls back to a retryable state when the batch request fails', async () => {
   ).toBe(true)
   expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeEnabled()
   expect(probeAllCalls()).toBe(1)
+})
+
+// Full key-disclosure flow: verification methods + proof + the one-shot
+// multi-key channel key read, on top of the key status payload.
+const DISCLOSURE_KEY = 'sk-alpha\nsk-bravo\nsk-charlie'
+
+function mockDisclosureFlow(
+  keyResponse: () =>
+    | Promise<{ success: boolean; message?: string; data?: { key: string } }>
+    | { success: boolean; message?: string; data?: { key: string } }
+) {
+  let keyReads = 0
+  let verifications = 0
+  const get = vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
+    if (url === '/api/verify/methods') {
+      return {
+        data: {
+          success: true,
+          data: {
+            scope: 'channel.key.read',
+            methods: [{ method: '2fa', available: true }],
+            oauth_providers: [],
+            password_encryption_enabled: false,
+          },
+        },
+      }
+    }
+    throw new Error(`Unexpected GET ${url}`)
+  })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockImplementation(async (url: string, data?: unknown) => {
+      if (url === '/api/channel/multi_key/manage') {
+        return {
+          data: {
+            success: true,
+            data: {
+              keys: keyStatusPayload,
+              total: 3,
+              page: 1,
+              page_size: 10,
+              total_pages: 1,
+              enabled_count: 1,
+              manual_disabled_count: 1,
+              auto_disabled_count: 1,
+            },
+          },
+        }
+      }
+      if (url === '/api/verify') {
+        verifications++
+        return {
+          data: {
+            success: true,
+            data: {
+              proof_token: 'multi-key-proof',
+              method: '2fa',
+              scope: 'channel.key.read',
+              expires_at: Math.floor(Date.now() / 1000) + 60,
+            },
+          },
+        }
+      }
+      if (url === '/api/channel/7/key') {
+        keyReads++
+        const response = await keyResponse()
+        return { data: response }
+      }
+      void data
+      throw new Error(`Unexpected POST ${url}`)
+    })
+  return {
+    get,
+    post,
+    keyReadCalls: () => keyReads,
+    verifyCalls: () => verifications,
+  }
+}
+
+async function unlockKeys(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'Reveal keys' }))
+  await user.type(
+    await screen.findByLabelText('Authenticator code or backup code'),
+    '123456'
+  )
+  await user.click(screen.getByRole('button', { name: 'Verify' }))
+}
+
+it('hides the key disclosure entry from a non-super-admin', async () => {
+  useAuthStore.setState({
+    auth: {
+      ...originalAuth,
+      user: { id: 2, username: 'admin', role: ROLE.ADMIN },
+    },
+  })
+  mockChannelApi(async () => ({
+    success: true,
+    data: { key_index: 0, probe: { result: 'ok', last_probe_at: 1700000000 } },
+  }))
+
+  renderDialog()
+  await screen.findByRole('table')
+
+  expect(
+    screen.queryByRole('button', { name: 'Reveal keys' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('columnheader', { name: 'Key' })
+  ).not.toBeInTheDocument()
+})
+
+it('verifying unlocks all keys and reveals a single row plaintext on demand', async () => {
+  const { keyReadCalls } = mockDisclosureFlow(() => ({
+    success: true,
+    data: { key: DISCLOSURE_KEY },
+  }))
+  const unlockedToast = vi.spyOn(toast, 'success').mockReturnValue(0)
+
+  const user = userEvent.setup()
+  renderDialog()
+  const table = await screen.findByRole('table')
+  const row2 = rowContaining(table, '#2')
+  // Before unlocking, the row shows only its masked preview.
+  await waitFor(() =>
+    expect(within(row2).queryByText('sk-key-b...')).not.toBeNull()
+  )
+  expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
+  expect(screen.queryAllByRole('button', { name: 'Show key' })).toHaveLength(0)
+
+  await unlockKeys(user)
+
+  await waitFor(() =>
+    expect(unlockedToast).toHaveBeenCalledWith('Channel key unlocked')
+  )
+  // Every row now offers its own reveal + copy controls; nothing is shown yet.
+  await waitFor(() =>
+    expect(screen.getAllByRole('button', { name: 'Show key' })).toHaveLength(3)
+  )
+  expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
+
+  await user.click(
+    within(rowContaining(table, '#2')).getByRole('button', { name: 'Show key' })
+  )
+  expect(within(rowContaining(table, '#2')).getByText('sk-bravo')).toBeVisible()
+  // The other rows stay masked: only the revealed row exposes its plaintext.
+  expect(screen.queryByText('sk-alpha')).not.toBeInTheDocument()
+  expect(screen.queryByText('sk-charlie')).not.toBeInTheDocument()
+
+  await user.click(
+    within(rowContaining(table, '#2')).getByRole('button', { name: 'Copy key' })
+  )
+  await waitFor(() =>
+    expect(copyToClipboardMock).toHaveBeenCalledWith('sk-bravo')
+  )
+  expect(keyReadCalls()).toBe(1)
+})
+
+it('clears all revealed plaintext when the dialog closes', async () => {
+  mockDisclosureFlow(() => ({
+    success: true,
+    data: { key: DISCLOSURE_KEY },
+  }))
+  vi.spyOn(toast, 'success').mockReturnValue(0)
+
+  const user = userEvent.setup()
+  const view = render(
+    <QueryClientProvider client={client}>
+      <MultiKeyManageDialog open onOpenChange={() => {}} />
+    </QueryClientProvider>
+  )
+  await unlockKeys(user)
+  await waitFor(() =>
+    expect(screen.getAllByRole('button', { name: 'Show key' })).toHaveLength(3)
+  )
+  await user.click(
+    within(rowContaining(await screen.findByRole('table'), '#2')).getByRole(
+      'button',
+      { name: 'Show key' }
+    )
+  )
+  expect(screen.getByText('sk-bravo')).toBeVisible()
+
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <MultiKeyManageDialog open={false} onOpenChange={() => {}} />
+    </QueryClientProvider>
+  )
+  await waitFor(() =>
+    expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
+  )
+
+  // Reopening the same channel starts masked again: no plaintext lingers.
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <MultiKeyManageDialog open onOpenChange={() => {}} />
+    </QueryClientProvider>
+  )
+  await screen.findByRole('table')
+  expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
+})
+
+it('abandoning verification exposes no key plaintext and skips the key fetch', async () => {
+  const { keyReadCalls, verifyCalls } = mockDisclosureFlow(() => ({
+    success: true,
+    data: { key: DISCLOSURE_KEY },
+  }))
+
+  const user = userEvent.setup()
+  renderDialog()
+  await screen.findByRole('table')
+
+  await user.click(screen.getByRole('button', { name: 'Reveal keys' }))
+  await user.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+  // The verification UI is gone and nothing was fetched or exposed.
+  await waitFor(() =>
+    expect(
+      screen.queryByLabelText('Authenticator code or backup code')
+    ).not.toBeInTheDocument()
+  )
+  expect(verifyCalls()).toBe(0)
+  expect(keyReadCalls()).toBe(0)
+  expect(screen.queryAllByRole('button', { name: 'Show key' })).toHaveLength(0)
+  expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
+})
+
+it('exposes no key plaintext when the verified key fetch fails', async () => {
+  const { keyReadCalls } = mockDisclosureFlow(() => ({
+    success: false,
+    message: 'key read rejected',
+  }))
+
+  const user = userEvent.setup()
+  renderDialog()
+  await screen.findByRole('table')
+
+  await unlockKeys(user)
+
+  await waitFor(() =>
+    expect(handleServerError).toHaveBeenCalledWith(expect.any(Error))
+  )
+  expect(keyReadCalls()).toBe(1)
+  expect(screen.queryAllByRole('button', { name: 'Show key' })).toHaveLength(0)
+  expect(screen.queryByText('sk-bravo')).not.toBeInTheDocument()
 })
 
 it('reports a probe response without a health payload as an error', async () => {

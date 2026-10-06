@@ -73,3 +73,26 @@ export function isDestructiveAction(
     action.type === 'disable-all'
   )
 }
+
+/**
+ * Split a channel key's raw value into per-key entries, mirroring the
+ * server's key-list semantics: a JSON-array key list (Vertex-style) yields
+ * one entry per array element (raw JSON value), otherwise the value is the
+ * newline-separated multi-key list. The result is index-aligned with the
+ * key indices reported by the multi-key status payload.
+ */
+export function splitChannelKeys(rawKey: string): string[] {
+  const trimmed = rawKey.trim()
+  if (trimmed === '') return []
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) {
+        return parsed.map((value) => JSON.stringify(value))
+      }
+    } catch {
+      // Not a JSON array: fall back to the newline split below.
+    }
+  }
+  return rawKey.replaceAll(/^\n+|\n+$/g, '').split('\n')
+}
