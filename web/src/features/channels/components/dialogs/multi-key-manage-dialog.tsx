@@ -52,6 +52,7 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
+  probeMultiKey,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
@@ -101,6 +102,8 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  // Key index of the in-flight per-key probe; null when no probe is running.
+  const [probingIndex, setProbingIndex] = useState<number | null>(null)
 
   // Reset and load data when dialog opens
   useEffect(() => {
@@ -228,6 +231,65 @@ export function MultiKeyManageDialog({
   const formatKeyTimestamp = (timestamp?: number) => {
     if (!timestamp) return '-'
     return formatTimestamp(timestamp)
+  }
+
+  // Probe one key with a minimal real upstream request. The result is
+  // reference-only: it updates the row's Probe column but never disables or
+  // re-schedules the key. The local row is refreshed from the response so the
+  // column reflects the persisted health without a full reload.
+  const handleTestKey = async (keyIndex: number) => {
+    if (!currentRow || probingIndex !== null) return
+    setProbingIndex(keyIndex)
+    try {
+      const response = await probeMultiKey(currentRow.id, keyIndex)
+      const probe = response.data?.probe
+      if (!probe) {
+        handleServerError(response, t('Failed to probe key'))
+        return
+      }
+      setKeys((prev) =>
+        prev.map((key) => (key.index === keyIndex ? { ...key, probe } : key))
+      )
+    } catch (error: unknown) {
+      handleServerError(error, t('Failed to probe key'))
+    } finally {
+      setProbingIndex(null)
+    }
+  }
+
+  const renderProbeCell = (key: KeyStatus) => {
+    const probe = key.probe
+    if (!probe) {
+      return (
+        <StatusBadge
+          label={t('Not probed')}
+          variant='neutral'
+          showDot
+          copyable={false}
+        />
+      )
+    }
+    const available = probe.result === 'ok'
+    return (
+      <div className='flex flex-col gap-1'>
+        <StatusBadge
+          label={available ? t('Available') : t('Unavailable')}
+          variant={available ? 'success' : 'danger'}
+          showDot
+          copyable={false}
+        />
+        {probe.error_code && (
+          <div className='text-muted-foreground truncate text-xs'>
+            {probe.error_code}
+          </div>
+        )}
+        {probe.last_probe_at && (
+          <div className='text-muted-foreground text-xs'>
+            {formatTimestamp(probe.last_probe_at)}
+          </div>
+        )}
+      </div>
+    )
   }
 
   if (!currentRow) return null
@@ -404,6 +466,12 @@ export function MultiKeyManageDialog({
                     cell: (key) => renderStatusBadge(key.status),
                   },
                   {
+                    id: 'probe',
+                    header: t('Probe'),
+                    className: 'w-44',
+                    cell: (key) => renderProbeCell(key),
+                  },
+                  {
                     id: 'reason',
                     header: t('Disabled Reason'),
                     className: 'min-w-[200px]',
@@ -426,7 +494,10 @@ export function MultiKeyManageDialog({
                         keyIndex={key.index}
                         status={key.status}
                         canDelete={canEditSensitive}
+                        probeBusy={probingIndex !== null}
+                        isProbing={probingIndex === key.index}
                         onAction={setConfirmAction}
+                        onProbe={handleTestKey}
                       />
                     ),
                   },

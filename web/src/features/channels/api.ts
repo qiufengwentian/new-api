@@ -37,6 +37,7 @@ import type {
   GetChannelsResponse,
   MultiKeyManageParams,
   MultiKeyStatusResponse,
+  ProbeKeyResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
   TagOperationParams,
@@ -440,6 +441,22 @@ export async function getMultiKeyStatus(
     page_size: pageSize,
     status,
   }) as Promise<MultiKeyStatusResponse>
+}
+
+/**
+ * Probe a single key of a multi-key channel. Free and reference-only: it never
+ * deducts quota and never changes scheduling or channel state.
+ */
+export async function probeMultiKey(
+  channelId: number,
+  keyIndex: number
+): Promise<ProbeKeyResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/probe_key`,
+    { key_index: keyIndex },
+    channelActionConfig()
+  )
+  return res.data
 }
 
 /**
