@@ -916,6 +916,29 @@ func TestChannel(c *gin.Context) {
 	})
 }
 
+// loadMultiKeyChannelOrReply loads the channel by id and checks that it is in
+// multi-key mode. When it returns false it has already written the standard
+// error envelope (channel not found or not multi-key mode) and the caller
+// must return without writing a response.
+func loadMultiKeyChannelOrReply(c *gin.Context, channelId int) (*model.Channel, bool) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "渠道不存在",
+		})
+		return nil, false
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "该渠道不是多密钥模式",
+		})
+		return nil, false
+	}
+	return channel, true
+}
+
 // ProbeChannelKey probes one key of a multi-key channel with a minimal real
 // upstream request and persists the outcome in the channel's per-key health
 // array, which stays index-aligned with the key list inside the channel_info
@@ -940,19 +963,8 @@ func ProbeChannelKey(c *gin.Context) {
 	}
 	keyIndex := *request.KeyIndex
 
-	channel, err := model.GetChannelById(channelId, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "渠道不存在",
-		})
-		return
-	}
-	if !channel.ChannelInfo.IsMultiKey {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "该渠道不是多密钥模式",
-		})
+	channel, ok := loadMultiKeyChannelOrReply(c, channelId)
+	if !ok {
 		return
 	}
 	if keyIndex < 0 || keyIndex >= len(channel.GetKeys()) {
@@ -1079,19 +1091,8 @@ func ProbeAllChannelKeys(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	channel, err := model.GetChannelById(channelId, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "渠道不存在",
-		})
-		return
-	}
-	if !channel.ChannelInfo.IsMultiKey {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "该渠道不是多密钥模式",
-		})
+	channel, ok := loadMultiKeyChannelOrReply(c, channelId)
+	if !ok {
 		return
 	}
 	testUserID, err := resolveChannelTestUserID(c)

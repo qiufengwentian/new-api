@@ -1717,20 +1717,8 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
-	channel, err := model.GetChannelById(request.ChannelId, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "渠道不存在",
-		})
-		return
-	}
-
-	if !channel.ChannelInfo.IsMultiKey {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "该渠道不是多密钥模式",
-		})
+	channel, ok := loadMultiKeyChannelOrReply(c, request.ChannelId)
+	if !ok {
 		return
 	}
 	if multiKeyActionRequiresSensitiveWrite(request.Action) &&
