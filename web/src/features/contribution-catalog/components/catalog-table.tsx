@@ -57,6 +57,11 @@ export function CatalogTable(props: CatalogTableProps) {
     setDeleteTarget(null)
   }
 
+  // Both binding cells share one display rule: the resolved name, or - when the
+  // bound target no longer exists - its id with the localized marker.
+  const bindingDisplay = (kind: 'channel' | 'plan', id: number, name?: string) =>
+    name ? name : `${kind} #${id} ${t('(deleted/missing)')}`
+
   return (
     <>
       <div className='flex items-center justify-between gap-3'>
@@ -96,21 +101,17 @@ export function CatalogTable(props: CatalogTableProps) {
             id: 'host-channel',
             header: t('Host Channel'),
             cell: (entry) =>
-              entry.host_channel_name ? (
+              bindingDisplay(
+                'channel',
+                entry.host_channel_id,
                 entry.host_channel_name
-              ) : (
-                `channel #${entry.host_channel_id} ${t('(deleted/missing)')}`
               ),
           },
           {
             id: 'plan',
             header: t('Subscription Plan'),
             cell: (entry) =>
-              entry.plan_title ? (
-                entry.plan_title
-              ) : (
-                `plan #${entry.plan_id} ${t('(deleted/missing)')}`
-              ),
+              bindingDisplay('plan', entry.plan_id, entry.plan_title),
           },
           {
             id: 'contributed-keys',
