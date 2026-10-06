@@ -108,10 +108,9 @@ func saveContributionEntries(c *gin.Context, entries []contribution_setting.Cont
 
 // validateContributionEntryForEnable enforces the enable-time prerequisites: the
 // host channel must be an existing multi-key channel and the reward plan must
-// exist. The sibling slice is kept so callers need no extra read, but there is no
-// channel-type uniqueness anymore: two entries may deliberately back the same
-// provider channel type as two distinct upstreams.
-func validateContributionEntryForEnable(entry contribution_setting.ContributionEntry, siblings []contribution_setting.ContributionEntry) (string, string) {
+// exist. There is no channel-type uniqueness anymore: two entries may
+// deliberately back the same provider channel type as two distinct upstreams.
+func validateContributionEntryForEnable(entry contribution_setting.ContributionEntry) (string, string) {
 	hostChannel, err := model.GetChannelById(entry.HostChannelId, false)
 	if err != nil {
 		return contributionCodeHostChannelAbsent, fmt.Sprintf("host channel %d does not exist", entry.HostChannelId)
@@ -123,6 +122,22 @@ func validateContributionEntryForEnable(entry contribution_setting.ContributionE
 		return contributionCodePlanAbsent, fmt.Sprintf("subscription plan %d does not exist", entry.PlanId)
 	}
 	return "", ""
+}
+
+// deriveContributionChannelType backfills the entry's provider channel type from
+// its host channel when that channel is readable. The admin form no longer picks
+// a channel type - the backend owns the binding - so a created or updated entry
+// must carry the host channel's type, or every contribution it stamps would
+// persist channel type 0 and user-facing names would degrade to "channel type 0".
+// A disabled draft with an unreadable host channel keeps the request value (or 0);
+// it cannot be enabled until its binding is fixed, and the next edit derives again.
+func deriveContributionChannelType(entry contribution_setting.ContributionEntry) contribution_setting.ContributionEntry {
+	hostChannel, err := model.GetChannelById(entry.HostChannelId, false)
+	if err != nil {
+		return entry
+	}
+	entry.ChannelType = hostChannel.Type
+	return entry
 }
 
 // GetContributionCatalogAdmin returns the full catalog, disabled entries included.
@@ -172,8 +187,13 @@ func CreateContributionCatalogEntry(c *gin.Context) {
 		contributionReject(c, contributionCodeInvalidEntry, "failed to generate a unique upstream code")
 		return
 	}
+	// The channel type is owned by the host-channel binding, not by the admin
+	// form: backfill it whenever the host channel is readable, so an entry never
+	// persists channel type 0 and every contribution it later stamps carries the
+	// type its host channel really is.
+	entry = deriveContributionChannelType(entry)
 	if entry.Enabled {
-		if code, message := validateContributionEntryForEnable(entry, entries); code != "" {
+		if code, message := validateContributionEntryForEnable(entry); code != "" {
 			contributionReject(c, code, message)
 			return
 		}
@@ -199,8 +219,11 @@ func UpdateContributionCatalogEntry(c *gin.Context) {
 		contributionReject(c, contributionCodeEntryNotFound, fmt.Sprintf("contribution entry %d does not exist", entry.Id))
 		return
 	}
+	// The channel type follows the host-channel binding exactly as in create: an
+	// update may not leave a stale or zero channel type behind.
+	entry = deriveContributionChannelType(entry)
 	if entry.Enabled {
-		if code, message := validateContributionEntryForEnable(entry, entries); code != "" {
+		if code, message := validateContributionEntryForEnable(entry); code != "" {
 			contributionReject(c, code, message)
 			return
 		}
