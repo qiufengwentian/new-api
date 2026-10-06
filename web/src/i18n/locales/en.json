@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "Select a valid upstream from the list",
     "Probe": "Probe",
     "Not probed": "Not probed",
-    "Failed to probe key": "Failed to probe key"
+    "Failed to probe key": "Failed to probe key",
+    "Test All Keys": "Test All Keys",
+    "Failed to probe all keys": "Failed to probe all keys",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable"
   }
 }

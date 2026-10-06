@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "請從清單中選擇有效的上游",
     "Probe": "檢測",
     "Not probed": "未檢測",
-    "Failed to probe key": "密鑰檢測失敗"
+    "Failed to probe key": "密鑰檢測失敗",
+    "Test All Keys": "測試全部密鑰",
+    "Failed to probe all keys": "全部密鑰檢測失敗",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "已檢測 {{tested}} 個密鑰：{{available}} 個可用，{{unavailable}} 個不可用"
   }
 }

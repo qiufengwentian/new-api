@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "リストから有効なアップストリームを選択してください",
     "Probe": "プローブ",
     "Not probed": "未プローブ",
-    "Failed to probe key": "キーのプローブに失敗しました"
+    "Failed to probe key": "キーのプローブに失敗しました",
+    "Test All Keys": "全キーをテストする",
+    "Failed to probe all keys": "全キーのプローブに失敗しました",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "{{tested}} 件のキーをプローブしました：{{available}} 件利用可能、{{unavailable}} 件利用不可"
   }
 }
