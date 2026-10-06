@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "1つのAPI",
     "footer.columns.related.title": "関連プロジェクト",
     "footer.defaultCopyright": "すべての権利を留保します。",
-    "footer.new\u0061pi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
+    "footer.newapi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "高度なカスタムチャネルでは、プロトコル変換を行わない /v1/responses ルートにのみ適用されます。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "2025 年 5 月 10 日以降に追加されたチャネルの場合、デプロイ時にモデル名から「.」を削除する必要はありません",
     "For private deployments, format: https://fastgpt.run/api/openapi": "プライベートデプロイメントの場合、形式: https://fastgpt.run/api/openapi",
@@ -6874,7 +6874,7 @@
     "Contribute": "提供する",
     "Contribute an upstream key": "上流キーを提供する",
     "Contribute your spare upstream quota and get a subscription reward.": "余っている上流の枠を提供して、サブスクリプションの報酬を受け取りましょう。",
-    "Contribution Catalog": "Contribution Catalog",
+    "Contribution Catalog": "貢献カタログ",
     "Contributed Upstream Keys": "提供された上流キー",
     "Contributed Upstreams": "貢献可能な上流一覧",
     "Contributing upstream keys is currently closed.": "上流キーの提供は現在停止しています。",
@@ -6958,6 +6958,8 @@
     "Contribute an upstream key and it will show up here.": "上流キーを提供すると、ここに表示されます。",
     "No reward": "特典なし",
     "Only a live contribution can be revoked.": "有効な提供のみ取り消せます。",
-    "You have brought in {{count}} upstreams.": "{{count}} 個の上流を獲得しています。"
+    "You have brought in {{count}} upstreams.": "{{count}} 個の上流を獲得しています。",
+    "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "貢献可能なアップストリームは、ユーザーキーを受け取るマルチキーホストチャネルと報酬プランをバインドします。",
+    "Select a valid upstream from the list": "リストから有効なアップストリームを選択してください"
   }
 }

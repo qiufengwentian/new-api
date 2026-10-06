@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Các Dự Án Liên Quan",
     "footer.defaultCopyright": "Bản quyền được bảo lưu.",
-    "footer.new\u0061pi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
+    "footer.newapi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "Với kênh tùy chỉnh nâng cao, thiết lập này chỉ áp dụng cho các route /v1/responses không chuyển đổi giao thức.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Đối với các kênh được thêm sau ngày 10 tháng 5 năm 2025, không cần loại bỏ \".\" khỏi tên mô hình trong quá trình triển khai",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Đối với các triển khai riêng tư, định dạng: https://fastgpt.run/api/openapi",
@@ -6874,7 +6874,7 @@
     "Contribute": "Đóng góp",
     "Contribute an upstream key": "Đóng góp khóa nguồn",
     "Contribute your spare upstream quota and get a subscription reward.": "Đóng góp hạn mức nguồn còn dư và nhận thưởng bằng gói đăng ký.",
-    "Contribution Catalog": "Contribution Catalog",
+    "Contribution Catalog": "Danh mục đóng góp",
     "Contributed Upstream Keys": "Khóa nguồn đã đóng góp",
     "Contributed Upstreams": "Danh mục nguồn có thể đóng góp",
     "Contributing upstream keys is currently closed.": "Việc đóng góp khóa thượng nguồn hiện đã đóng.",
@@ -6958,6 +6958,8 @@
     "Contribute an upstream key and it will show up here.": "Đóng góp một khóa nguồn và nó sẽ xuất hiện ở đây.",
     "No reward": "Không có phần thưởng",
     "Only a live contribution can be revoked.": "Chỉ có thể thu hồi đóng góp đang hiệu lực.",
-    "You have brought in {{count}} upstreams.": "Bạn đã mang về {{count}} nguồn."
+    "You have brought in {{count}} upstreams.": "Bạn đã mang về {{count}} nguồn.",
+    "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "Upstream đóng góp sẽ liên kết kênh máy chủ đa khóa và gói thưởng nhận khóa người dùng.",
+    "Select a valid upstream from the list": "Chọn một upstream hợp lệ từ danh sách"
   }
 }
