@@ -1435,3 +1435,44 @@ func TestContributionCatalogReportsTheAccountContributionSummary(t *testing.T) {
 	require.True(t, ok, "the catalog read reports the account's contribution summary")
 	assert.Equal(t, float64(2), summary["entry_code_count"])
 }
+
+// The admin form no longer sends channel_type - the backend derives it from the
+// bound host channel. An entry created or updated without a channel type must
+// persist the host channel's type, or every contribution it stamps would degrade
+// to "channel type 0" in user-facing names.
+func TestContributionCatalogDerivesChannelTypeFromHostChannel(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	// A non-default provider type proves the derivation really came from the
+	// channel, not from the zero value coinciding with the request default.
+	host := model.Channel{Id: 1, Type: 14, Name: "host-14", Key: "sk-multi-a\nsk-multi-b", Status: common.ChannelStatusEnabled}
+	host.ChannelInfo = model.ChannelInfo{IsMultiKey: true, MultiKeySize: 2}
+	require.NoError(t, db.Create(&host).Error)
+	seedContributionPlan(t, db, 1)
+	router := newContributionCatalogTestRouter()
+
+	// A create body without a channel_type field, exactly like the dialog sends.
+	create := `{"name":"Anthropic","register_url":"https://claude.ai/signup","key_placeholder":"sk-ant-...","enabled":true,"host_channel_id":1,"plan_id":1}`
+	response := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", create))
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	data, ok := response["data"].(map[string]any)
+	require.True(t, ok)
+	entry, ok := data["entry"].(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 14, entry["channel_type"], "the created entry carries its host channel's type")
+	assert.Equal(t, float64(1), entry["id"])
+
+	// An update without a channel_type field keeps the derivation in sync too.
+	update := `{"id":1,"name":"Anthropic Official","register_url":"https://claude.ai/signup","key_placeholder":"sk-ant-...","enabled":true,"host_channel_id":1,"plan_id":1}`
+	response = decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPut, "/api/contribution/admin/catalog", update))
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	require.Len(t, contribution_setting.AllEntries(), 1)
+	assert.Equal(t, 14, contribution_setting.AllEntries()[0].ChannelType, "the updated entry keeps its host channel's type")
+
+	// A disabled draft with an unreadable host channel keeps the request value
+	// instead of being rejected: it cannot be enabled until the binding is fixed.
+	disabled := `{"id":1,"channel_type":7,"name":"Draft","enabled":false,"host_channel_id":999,"plan_id":999}`
+	response = decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPut, "/api/contribution/admin/catalog", disabled))
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	require.Len(t, contribution_setting.AllEntries(), 1)
+	assert.Equal(t, 7, contribution_setting.AllEntries()[0].ChannelType, "an unreadable host channel keeps the request value")
+}

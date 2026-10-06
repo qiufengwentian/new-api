@@ -1099,3 +1099,55 @@ func TestContributionRevokeIsTerminal(t *testing.T) {
 	require.NoError(t, ReleaseContribution(contribution, revokedKey, ContributionStatusRevoked, ContributionReasonUserRevoked, true))
 	assert.Equal(t, ContributionStatusActive, contribution.Status, "a no-op must not report a transition it did not perform")
 }
+
+// The account tally counts distinct catalog entries (upstream codes), not records
+// and not channel types: two active contributions behind different codes are two
+// upstreams, two active contributions behind the same code are one, and a dead or
+// revoked contribution never counts at all. The count is per account.
+func TestContributionEntryCodeCountDistinguishesDistinctUpstreams(t *testing.T) {
+	truncateTables(t)
+
+	seed := func(userId int, entryCode string, status string, fingerprint string) *Contribution {
+		record := &Contribution{
+			UserId:         userId,
+			EntryCode:      entryCode,
+			ChannelType:    1,
+			HostChannelId:  1,
+			KeyFingerprint: common.GetPointer(fingerprint),
+			KeyHash:        ContributionKeyHash("sk-" + fingerprint),
+			KeyMask:        ContributionKeyMask,
+			Status:         status,
+			RewardGranted:  status == ContributionStatusActive,
+		}
+		require.NoError(t, record.Create())
+		return record
+	}
+
+	// Two active contributions behind different codes - the same provider channel
+	// type is fine, they are two distinct upstreams - tally as two.
+	seed(901, "ABCDEFGH", ContributionStatusActive, "fp-count-a")
+	seed(901, "JKMNPRST", ContributionStatusActive, "fp-count-b")
+	count, err := CountActiveContributionEntryCodes(901)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "two different codes are two upstreams")
+
+	// A second active key behind an already-counted code is still one upstream.
+	seed(901, "ABCDEFGH", ContributionStatusActive, "fp-count-c")
+	count, err = CountActiveContributionEntryCodes(901)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "the same code is one upstream no matter how many keys")
+
+	// Terminal records never count: dead and revoked contributions behind two more
+	// codes do not raise the tally.
+	seed(901, "CCCCDDDD", ContributionStatusDead, "fp-count-dead")
+	seed(901, "EEEEFFFF", ContributionStatusRevoked, "fp-count-revoked")
+	count, err = CountActiveContributionEntryCodes(901)
+	require.NoError(t, err)
+	assert.Equal(t, 2, count, "dead and revoked contributions are not upstreams")
+
+	// The tally is per account.
+	seed(902, "ABCDEFGH", ContributionStatusActive, "fp-count-other-user")
+	count, err = CountActiveContributionEntryCodes(902)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
