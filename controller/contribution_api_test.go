@@ -419,7 +419,23 @@ func TestContributionCatalogAdminResolvesNamesAndKeyCount(t *testing.T) {
 	// A disabled entry may point at a channel or plan that no longer exists; the
 	// read must degrade its cells to empty names, not refuse the request.
 	broken := `{"channel_type":1,"name":"Broken","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":false,"host_channel_id":999,"plan_id":999}`
-	require.Equal(t, true, decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", broken))["success"])
+	brokenResp := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", broken))
+	require.Equal(t, true, brokenResp["success"], "body: %+v", brokenResp)
+	brokenCode, ok := brokenResp["data"].(map[string]any)["entry"].(map[string]any)["code"].(string)
+	require.True(t, ok, "the disabled entry carries its upstream code")
+
+	// The count ignores the entry's enabled flag: two live keys under the
+	// disabled entry's code still report two.
+	for i := range 2 {
+		require.NoError(t, db.Create(&model.Contribution{
+			UserId:        426 + i,
+			EntryCode:     brokenCode,
+			ChannelType:   1,
+			HostChannelId: 999,
+			KeyMask:       model.ContributionKeyMask,
+			Status:        model.ContributionStatusActive,
+		}).Error)
+	}
 
 	response := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodGet, "/api/contribution/admin/catalog", ""))
 	require.Equal(t, true, response["success"], "body: %+v", response)
@@ -449,7 +465,7 @@ func TestContributionCatalogAdminResolvesNamesAndKeyCount(t *testing.T) {
 	require.True(t, ok)
 	assert.Empty(t, brokenEntry["host_channel_name"], "a since-deleted channel degrades to an empty name")
 	assert.Empty(t, brokenEntry["plan_title"], "a since-deleted plan degrades to an empty title")
-	assert.EqualValues(t, 0, brokenEntry["contributed_keys"], "a read failure or absent code degrades to zero")
+	assert.EqualValues(t, 2, brokenEntry["contributed_keys"], "the count ignores the enabled flag; a disabled entry still reports its active keys")
 }
 
 func TestContributionCatalogAdminMutationsAreAudited(t *testing.T) {
