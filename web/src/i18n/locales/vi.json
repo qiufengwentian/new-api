@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "Chọn một upstream hợp lệ từ danh sách",
     "Probe": "Kiểm tra",
     "Not probed": "Chưa kiểm tra",
-    "Failed to probe key": "Kiểm tra khóa thất bại"
+    "Failed to probe key": "Kiểm tra khóa thất bại",
+    "Test All Keys": "Kiểm tra toàn bộ khóa",
+    "Failed to probe all keys": "Kiểm tra toàn bộ khóa thất bại",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "Đã kiểm tra {{tested}} khóa: {{available}} khả dụng, {{unavailable}} không khả dụng"
   }
 }

@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "Sélectionnez un upstream valide dans la liste",
     "Probe": "Sonde",
     "Not probed": "Non sondé",
-    "Failed to probe key": "Échec de la sonde de clé"
+    "Failed to probe key": "Échec de la sonde de clé",
+    "Test All Keys": "Tester toutes les clés",
+    "Failed to probe all keys": "Échec de la sonde de toutes les clés",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "{{tested}} clés sondées : {{available}} disponibles, {{unavailable}} indisponibles"
   }
 }

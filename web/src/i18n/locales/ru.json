@@ -6964,6 +6964,9 @@
     "Select a valid upstream from the list": "Выберите допустимый апстрим из списка",
     "Probe": "Проверка",
     "Not probed": "Не проверено",
-    "Failed to probe key": "Не удалось проверить ключ"
+    "Failed to probe key": "Не удалось проверить ключ",
+    "Test All Keys": "Проверить все ключи",
+    "Failed to probe all keys": "Не удалось проверить все ключи",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "Проверено ключей: {{tested}} — доступно: {{available}}, недоступно: {{unavailable}}"
   }
 }
