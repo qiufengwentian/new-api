@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Loader2, Gauge } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -26,20 +27,40 @@ type MultiKeyTableRowActionsProps = {
   keyIndex: number
   status: number
   canDelete: boolean
+  probeBusy: boolean
+  isProbing: boolean
   onAction: (action: MultiKeyConfirmAction) => void
+  onProbe: (keyIndex: number) => void
 }
 
 export function MultiKeyTableRowActions({
   keyIndex,
   status,
   canDelete,
+  probeBusy,
+  isProbing,
   onAction,
+  onProbe,
 }: MultiKeyTableRowActionsProps) {
   const { t } = useTranslation()
   const isEnabled = status === 1
 
   return (
     <div className='flex justify-end gap-2'>
+      <Button
+        variant='outline'
+        size='sm'
+        onClick={() => onProbe(keyIndex)}
+        disabled={probeBusy}
+        title={t('Test this key')}
+      >
+        {isProbing ? (
+          <Loader2 className='size-4 animate-spin' />
+        ) : (
+          <Gauge className='size-4' />
+        )}
+        {t('Test')}
+      </Button>
       {isEnabled ? (
         <Button
           variant='outline'

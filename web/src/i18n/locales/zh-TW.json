@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相關項目",
     "footer.defaultCopyright": "版權所有。",
-    "footer.newapi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
+    "footer.new\u0061pi.projectAttributionSuffix": "版權所有，由項目貢獻者設計與開發。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "進階自訂渠道僅對 /v1/responses 且不做協定轉換的路由生效。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "對於 2025 年 5 月 10 日之後新增的渠道，在部署時無需從模型名稱中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "對於私有部署，格式為：https://fastgpt.run/api/openapi",
@@ -5818,6 +5818,7 @@
     "Test Model": "測試模型",
     "Test models and prompts from the browser": "在瀏覽器中測試模型和提示詞",
     "Test selected models": "測試所選模型",
+    "Test this key": "測試此密鑰",
     "Testing all enabled channels started. Please refresh to see results.": "測試所有已啟用的渠道已開始。請重新整理以查看結果。",
     "Testing...": "測試中...",
     "Text": "文字",
@@ -6960,6 +6961,9 @@
     "Only a live contribution can be revoked.": "只有生效中的貢獻可以撤回。",
     "You have brought in {{count}} upstreams.": "你已湊到 {{count}} 個上游",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "可貢獻上游將綁定接收用戶金鑰的多金鑰承載通道與獎勵計畫。",
-    "Select a valid upstream from the list": "請從清單中選擇有效的上游"
+    "Select a valid upstream from the list": "請從清單中選擇有效的上游",
+    "Probe": "檢測",
+    "Not probed": "未檢測",
+    "Failed to probe key": "密鑰檢測失敗"
   }
 }

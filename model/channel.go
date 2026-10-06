@@ -62,12 +62,29 @@ type Channel struct {
 
 const ChannelStatusReasonAllKeysDisabled = "All keys are disabled"
 
+// Per-key probe health results. Probing is reference-only: the entries never
+// feed scheduling, auto-disable, or channel status.
+const (
+	ChannelKeyHealthResultOK    = "ok"
+	ChannelKeyHealthResultError = "error"
+)
+
+// ChannelKeyHealth records one key probe outcome of a multi-key channel. It
+// lives inside the existing channel_info JSON column, index-aligned with the
+// channel's key list, and is re-indexed by the key add/remove rebuild path.
+type ChannelKeyHealth struct {
+	Result      string `json:"result"`                  // ChannelKeyHealthResultOK or ChannelKeyHealthResultError
+	ErrorCode   string `json:"error_code,omitempty"`    // error code of a failed probe
+	LastProbeAt int64  `json:"last_probe_at,omitempty"` // unix seconds of the last probe
+}
+
 type ChannelInfo struct {
 	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式
 	MultiKeySize           int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
 	MultiKeyStatusList     map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
 	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyKeyHealth      []ChannelKeyHealth    `json:"multi_key_key_health,omitempty"`      // key检测结果列表，与key列表索引对齐
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
 }
@@ -594,6 +611,11 @@ func (channel *Channel) Update() error {
 				}
 			}
 		}
+		// Probe health is index-aligned with the key list; drop stale entries
+		// that no longer point at a surviving key.
+		if len(channel.ChannelInfo.MultiKeyKeyHealth) > channel.ChannelInfo.MultiKeySize {
+			channel.ChannelInfo.MultiKeyKeyHealth = channel.ChannelInfo.MultiKeyKeyHealth[:channel.ChannelInfo.MultiKeySize]
+		}
 	}
 	var err error
 	err = DB.Model(channel).Updates(channel).Error
@@ -755,17 +777,42 @@ func (channel *Channel) GetMultiKeyStatus(index int) int {
 	return common.ChannelStatusEnabled
 }
 
+// GetMultiKeyKeyHealth returns the recorded probe health of the key at index.
+// ok is false when the key has no recorded probe (never probed or unknown index).
+func (channel *Channel) GetMultiKeyKeyHealth(index int) (health ChannelKeyHealth, ok bool) {
+	healths := channel.ChannelInfo.MultiKeyKeyHealth
+	if index < 0 || index >= len(healths) {
+		return
+	}
+	health = healths[index]
+	ok = health.Result != ""
+	return
+}
+
+// RecordMultiKeyKeyHealth stores the probe health of the key at index in the
+// channel's channel_info JSON. The health array stays index-aligned with the
+// key list; RebuildChannelMultiKey re-indexes it when keys are removed.
+func (channel *Channel) RecordMultiKeyKeyHealth(index int, health ChannelKeyHealth) {
+	healths := channel.ChannelInfo.MultiKeyKeyHealth
+	for len(healths) <= index {
+		healths = append(healths, ChannelKeyHealth{})
+	}
+	healths[index] = health
+	channel.ChannelInfo.MultiKeyKeyHealth = healths
+}
+
 // RebuildChannelMultiKey rewrites a multi-key channel's newline-separated key list and its
 // per-index status maps after the key list changed. keepExisting decides whether the key at index
 // keeps its place, given its effective status; surviving keys are compacted in order with their
-// status entries and disabled reason/time entries re-indexed, and appended keys go to the end.
-// It reports how many keys were dropped and how many remain.
+// status entries, disabled reason/time entries, and recorded probe health re-indexed, and
+// appended keys go to the end. It reports how many keys were dropped and how many remain.
 func RebuildChannelMultiKey(channel *Channel, keepExisting func(index int, status int) bool, appended ...string) (removed int, remaining int) {
 	keys := channel.GetKeys()
 	kept := make([]string, 0, len(keys)+len(appended))
 	newStatusList := make(map[int]int)
 	newDisabledReason := make(map[int]string)
 	newDisabledTime := make(map[int]int64)
+	newKeyHealth := make([]ChannelKeyHealth, 0, len(keys))
 
 	for index, key := range keys {
 		status := channel.GetMultiKeyStatus(index)
@@ -783,6 +830,12 @@ func RebuildChannelMultiKey(channel *Channel, keepExisting func(index int, statu
 		if disabledTime, exists := channel.ChannelInfo.MultiKeyDisabledTime[index]; exists {
 			newDisabledTime[newIndex] = disabledTime
 		}
+		if health, exists := channel.GetMultiKeyKeyHealth(index); exists {
+			for len(newKeyHealth) <= newIndex {
+				newKeyHealth = append(newKeyHealth, ChannelKeyHealth{})
+			}
+			newKeyHealth[newIndex] = health
+		}
 	}
 	kept = append(kept, appended...)
 
@@ -791,6 +844,7 @@ func RebuildChannelMultiKey(channel *Channel, keepExisting func(index int, statu
 	channel.ChannelInfo.MultiKeyStatusList = newStatusList
 	channel.ChannelInfo.MultiKeyDisabledReason = newDisabledReason
 	channel.ChannelInfo.MultiKeyDisabledTime = newDisabledTime
+	channel.ChannelInfo.MultiKeyKeyHealth = newKeyHealth
 	return len(keys) + len(appended) - len(kept), len(kept)
 }
 

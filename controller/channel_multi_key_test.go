@@ -609,3 +609,308 @@ func TestChannelTestPipelineProbesKeyByIndex(t *testing.T) {
 	require.NoError(t, database.Model(&model.Log{}).Where("user_id = ? AND token_name = ?", root.Id, "模型测试").Count(&probeLogs).Error)
 	assert.EqualValues(t, 2, probeLogs, "each successful probe records one 模型测试 consume log row")
 }
+
+// probeKeyEnvelope is the parsed response of the per-key probe endpoint.
+type probeKeyEnvelope struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	ErrorCode string `json:"error_code"`
+	Data      *struct {
+		KeyIndex int                    `json:"key_index"`
+		Probe    model.ChannelKeyHealth `json:"probe"`
+	} `json:"data"`
+}
+
+// callProbeKey drives the per-key probe handler and returns the parsed envelope.
+func callProbeKey(t *testing.T, root *model.User, channelId int, keyIndex *int) probeKeyEnvelope {
+	t.Helper()
+	payload, err := common.Marshal(map[string]any{"key_index": keyIndex})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channelId)}}
+	c.Set("id", root.Id)
+	c.Set("role", common.RoleRootUser)
+	c.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/%d/probe_key", channelId), bytes.NewReader(payload))
+	c.Request.Header.Set("Content-Type", "application/json")
+	ProbeChannelKey(c)
+	var envelope probeKeyEnvelope
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &envelope))
+	return envelope
+}
+
+// callGetKeyStatus drives the multi-key status query and returns its payload.
+func callGetKeyStatus(t *testing.T, root *model.User, channelId int) MultiKeyStatusResponse {
+	t.Helper()
+	payload, err := common.Marshal(MultiKeyManageRequest{ChannelId: channelId, Action: "get_key_status"})
+	require.NoError(t, err)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("id", root.Id)
+	c.Set("role", common.RoleRootUser)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/channel/multi_key/manage", bytes.NewReader(payload))
+	c.Request.Header.Set("Content-Type", "application/json")
+	ManageMultiKeys(c)
+	var result struct {
+		Success bool                   `json:"success"`
+		Message string                 `json:"message"`
+		Data    MultiKeyStatusResponse `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+	require.True(t, result.Success, "get_key_status failed: %s", recorder.Body.String())
+	return result.Data
+}
+
+// unmarshalLogOtherAdminInfo extracts the admin-only metadata of a stored
+// consume-log row, where the pipeline records which multi-key row a log belongs to.
+func unmarshalLogOtherAdminInfo(t *testing.T, otherJSON string) map[string]any {
+	t.Helper()
+	var other struct {
+		AdminInfo map[string]any `json:"admin_info"`
+	}
+	require.NoError(t, common.Unmarshal([]byte(otherJSON), &other))
+	return other.AdminInfo
+}
+
+// The per-key probe pins the channel-test pipeline to one key (disabled keys
+// included), persists the outcome in the channel_info JSON column aligned to
+// the key list, re-aligns the entries when a key is deleted, records one
+// 模型测试 log row per successful probe attributed to the probed key, and
+// never bills the user.
+func TestChannelProbeKeyPersistsHealthAndRealignsAfterKeyDelete(t *testing.T) {
+	database, root := setupMultiKeyTestChannelDB(t)
+	withSelfUseModeEnabled(t)
+	service.InitHttpClient()
+	upstream := newKeyProbeUpstream(t)
+
+	channel := &model.Channel{
+		Name:    "key-probe-health",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b\nsk-key-c",
+		BaseURL: &upstream.server.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       3,
+			MultiKeyStatusList: map[int]int{1: common.ChannelStatusManuallyDisabled},
+		},
+	}
+	require.NoError(t, channel.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, channel.Delete())
+		model.InitChannelCache()
+	})
+
+	// Probe the manually disabled key: its credentials must reach the upstream
+	// and an ok health entry must persist at its index.
+	envelope := callProbeKey(t, root, channel.Id, lo.ToPtr(1))
+	require.True(t, envelope.Success, "probe failed: %+v", envelope)
+	require.NotNil(t, envelope.Data)
+	require.Equal(t, 1, envelope.Data.KeyIndex)
+	assert.Equal(t, model.ChannelKeyHealthResultOK, envelope.Data.Probe.Result)
+	assert.NotZero(t, envelope.Data.Probe.LastProbeAt)
+
+	authorizations, _ := upstream.recorded()
+	require.Len(t, authorizations, 1)
+	assert.Equal(t, "Bearer sk-key-b", authorizations[0])
+
+	loaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	health, ok := loaded.GetMultiKeyKeyHealth(1)
+	require.True(t, ok, "the probed key's health entry must be recorded")
+	assert.Equal(t, model.ChannelKeyHealthResultOK, health.Result)
+	assert.NotZero(t, health.LastProbeAt)
+	// Probing index 1 grows the health array to index 1; index 0 stays a
+	// never-probed placeholder, so the accessor reports no entry for it.
+	assert.Equal(t, 2, len(loaded.ChannelInfo.MultiKeyKeyHealth))
+	_, ok = loaded.GetMultiKeyKeyHealth(0)
+	assert.False(t, ok, "a never-probed key must have no health entry")
+
+	// Deleting the first key re-indexes the health array with the key list.
+	success, message := callMultiKeyManage(t, root, channel.Id, "delete_key", lo.ToPtr(0))
+	require.True(t, success, message)
+
+	loaded, err = model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"sk-key-b", "sk-key-c"}, loaded.GetKeys())
+	health, ok = loaded.GetMultiKeyKeyHealth(0)
+	require.True(t, ok, "the surviving key's health must move to its new index")
+	assert.Equal(t, model.ChannelKeyHealthResultOK, health.Result)
+	_, ok = loaded.GetMultiKeyKeyHealth(1)
+	assert.False(t, ok, "the never-probed key must have no health entry")
+
+	// The status query exposes the health entries aligned to the key rows.
+	statusData := callGetKeyStatus(t, root, channel.Id)
+	require.Len(t, statusData.Keys, 2)
+	require.NotNil(t, statusData.Keys[0].Probe)
+	assert.Equal(t, model.ChannelKeyHealthResultOK, statusData.Keys[0].Probe.Result)
+	assert.Nil(t, statusData.Keys[1].Probe)
+
+	// The successful probe recorded exactly one 模型测试 log row attributed to
+	// the probed key, and never billed the user.
+	var user model.User
+	require.NoError(t, database.Select("quota, used_quota").First(&user, "id = ?", root.Id).Error)
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.UsedQuota)
+	var probeLogs []model.Log
+	require.NoError(t, database.Model(&model.Log{}).
+		Where("user_id = ? AND token_name = ? AND channel_id = ?", root.Id, "模型测试", channel.Id).
+		Find(&probeLogs).Error)
+	require.Len(t, probeLogs, 1)
+	adminInfo := unmarshalLogOtherAdminInfo(t, probeLogs[0].Other)
+	assert.EqualValues(t, 1, adminInfo["multi_key_index"], "the log row must point at the probed key row")
+}
+
+// A pinned probe must reach keys the scheduler would never select — the
+// all-keys-disabled channel is the "can this key be salvaged" case — without
+// advancing the polling cursor or touching channel state, while the
+// nil-caller path keeps today's gating and cursor behavior.
+func TestChannelProbeKeyOfAllDisabledChannelLeavesSchedulerStateUntouched(t *testing.T) {
+	_, root := setupMultiKeyTestChannelDB(t)
+	withSelfUseModeEnabled(t)
+	service.InitHttpClient()
+	upstream := newKeyProbeUpstream(t)
+
+	channelA := &model.Channel{
+		Name:    "key-probe-all-disabled",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b",
+		BaseURL: &upstream.server.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusManuallyDisabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+			MultiKeyMode: constant.MultiKeyModePolling,
+			MultiKeyStatusList: map[int]int{
+				0: common.ChannelStatusManuallyDisabled,
+				1: common.ChannelStatusManuallyDisabled,
+			},
+		},
+	}
+	require.NoError(t, channelA.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, channelA.Delete())
+		model.InitChannelCache()
+	})
+
+	envelope := callProbeKey(t, root, channelA.Id, lo.ToPtr(0))
+	require.True(t, envelope.Success, "a disabled key must stay probeable on an all-disabled channel: %+v", envelope)
+	require.NotNil(t, envelope.Data)
+	assert.Equal(t, model.ChannelKeyHealthResultOK, envelope.Data.Probe.Result)
+
+	loaded, err := model.GetChannelById(channelA.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, common.ChannelStatusManuallyDisabled, loaded.Status, "a probe must not change channel state")
+	assert.Zero(t, loaded.ChannelInfo.MultiKeyPollingIndex, "a probe must not advance the polling cursor")
+	health, ok := loaded.GetMultiKeyKeyHealth(0)
+	require.True(t, ok)
+	assert.Equal(t, model.ChannelKeyHealthResultOK, health.Result)
+
+	// The nil-caller channel test still refuses an all-disabled channel, so the
+	// scheduler gating stays where it belongs.
+	result := testChannel(context.Background(), channelA, root.Id, "", "", false, nil)
+	require.Error(t, result.localErr, "the scheduler path must still gate on enabled keys")
+	require.Equal(t, types.ErrorCodeChannelNoAvailableKey, result.newAPIError.GetErrorCode())
+
+	// A polling-mode channel with enabled keys: the scheduler path still
+	// advances the cursor, a pinned probe must not.
+	channelB := &model.Channel{
+		Name:    "key-probe-polling",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b\nsk-key-c",
+		BaseURL: &upstream.server.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 3,
+			MultiKeyMode: constant.MultiKeyModePolling,
+		},
+	}
+	require.NoError(t, channelB.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, channelB.Delete())
+		model.InitChannelCache()
+	})
+
+	require.NoError(t, testChannel(context.Background(), channelB, root.Id, "", "", false, nil).localErr)
+	loadedB, err := model.GetChannelById(channelB.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, loadedB.ChannelInfo.MultiKeyPollingIndex, "the scheduler path must keep advancing the cursor")
+
+	envelope = callProbeKey(t, root, channelB.Id, lo.ToPtr(2))
+	require.True(t, envelope.Success, "the pinned probe must succeed: %+v", envelope)
+	require.NotNil(t, envelope.Data)
+	assert.Equal(t, model.ChannelKeyHealthResultOK, envelope.Data.Probe.Result)
+
+	loadedB, err = model.GetChannelById(channelB.Id, true)
+	require.NoError(t, err)
+	assert.Equal(t, 1, loadedB.ChannelInfo.MultiKeyPollingIndex, "a pinned probe must not advance the cursor")
+	health, ok = loadedB.GetMultiKeyKeyHealth(2)
+	require.True(t, ok, "the pinned probe must persist the health entry")
+	assert.Equal(t, model.ChannelKeyHealthResultOK, health.Result)
+}
+
+// A probe whose upstream call fails persists an error health entry carrying
+// the upstream error code; a failed probe writes no consume log and never
+// bills the user.
+func TestChannelProbeKeyPersistsErrorHealthForFailingUpstream(t *testing.T) {
+	database, root := setupMultiKeyTestChannelDB(t)
+	withSelfUseModeEnabled(t)
+	service.InitHttpClient()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	channel := &model.Channel{
+		Name:    "key-probe-failing",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b",
+		BaseURL: &upstream.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 2,
+		},
+	}
+	require.NoError(t, channel.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, channel.Delete())
+		model.InitChannelCache()
+	})
+
+	envelope := callProbeKey(t, root, channel.Id, lo.ToPtr(0))
+	require.False(t, envelope.Success, "a failing upstream must fail the probe")
+	require.NotNil(t, envelope.Data)
+	assert.Equal(t, model.ChannelKeyHealthResultError, envelope.Data.Probe.Result)
+	assert.Equal(t, "invalid_api_key", envelope.Data.Probe.ErrorCode)
+	assert.NotZero(t, envelope.Data.Probe.LastProbeAt)
+
+	loaded, err := model.GetChannelById(channel.Id, true)
+	require.NoError(t, err)
+	health, ok := loaded.GetMultiKeyKeyHealth(0)
+	require.True(t, ok, "a failed probe must still persist its health entry")
+	assert.Equal(t, model.ChannelKeyHealthResultError, health.Result)
+	assert.Equal(t, "invalid_api_key", health.ErrorCode)
+
+	// Failed probes record no 模型测试 log row and never bill the user.
+	var probeLogs int64
+	require.NoError(t, database.Model(&model.Log{}).
+		Where("user_id = ? AND token_name = ? AND channel_id = ?", root.Id, "模型测试", channel.Id).
+		Count(&probeLogs).Error)
+	assert.Zero(t, probeLogs, "the 模型测试 log row is a success-path pipeline convention")
+	var user model.User
+	require.NoError(t, database.Select("quota, used_quota").First(&user, "id = ?", root.Id).Error)
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.UsedQuota)
+}

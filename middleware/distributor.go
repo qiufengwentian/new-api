@@ -545,7 +545,22 @@ func getTaskOriginModelName(c *gin.Context) string {
 	return ""
 }
 
+// SetupContextForSelectedChannel prepares the relay context for the channel's
+// next schedulable key.
 func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, nil)
+}
+
+// SetupContextForChannelKeyIndex prepares the relay context for a key pinned by
+// index, as used by the per-key probe (ticket 02). The pinned path never calls
+// GetNextEnabledKey, so disabled keys stay probeable and the polling-mode
+// cursor is not advanced. A nil-caller of SetupContextForSelectedChannel keeps
+// today's behavior exactly.
+func SetupContextForChannelKeyIndex(c *gin.Context, channel *model.Channel, modelName string, keyIndex int) *types.NewAPIError {
+	return setupContextForSelectedChannel(c, channel, modelName, &keyIndex)
+}
+
+func setupContextForSelectedChannel(c *gin.Context, channel *model.Channel, modelName string, pinnedKeyIndex *int) *types.NewAPIError {
 	c.Set("original_model", modelName) // for retry
 	expectedPlugin := c.GetString("expected_task_plugin_key")
 	if channel == nil {
@@ -616,9 +631,27 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
-	if newAPIError != nil {
-		return newAPIError
+	var key string
+	var index int
+	if pinnedKeyIndex != nil {
+		// Pinned key probe (ticket 02): use the requested key directly, even
+		// when it is disabled, so probing can judge a key the scheduler would
+		// never select. The polling cursor is intentionally left untouched.
+		keys := channel.GetKeys()
+		if *pinnedKeyIndex < 0 || *pinnedKeyIndex >= len(keys) {
+			return types.NewError(
+				fmt.Errorf("key index %d is out of range, channel %d has %d keys", *pinnedKeyIndex, channel.Id, len(keys)),
+				types.ErrorCodeChannelNoAvailableKey,
+			)
+		}
+		key = keys[*pinnedKeyIndex]
+		index = *pinnedKeyIndex
+	} else {
+		var newAPIError *types.NewAPIError
+		key, index, newAPIError = channel.GetNextEnabledKey()
+		if newAPIError != nil {
+			return newAPIError
+		}
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)

@@ -22,12 +22,22 @@ import { z } from 'zod'
 // Channel Schema & Types
 // ============================================================================
 
+export const channelKeyHealthSchema = z.object({
+  result: z.string().default(''), // 'ok' | 'error' (empty when the key was never probed)
+  error_code: z.string().optional(),
+  last_probe_at: z.number().optional(),
+})
+
+export type ChannelKeyHealth = z.infer<typeof channelKeyHealthSchema>
+
 export const channelInfoSchema = z.object({
   is_multi_key: z.boolean().default(false),
   multi_key_size: z.number().default(0),
   multi_key_status_list: z.record(z.string(), z.number()).optional(),
   multi_key_disabled_reason: z.record(z.string(), z.string()).optional(),
   multi_key_disabled_time: z.record(z.string(), z.number()).optional(),
+  // Per-key probe health, index-aligned with the channel's key list.
+  multi_key_key_health: z.array(channelKeyHealthSchema).optional(),
   multi_key_polling_index: z.number().default(0),
   multi_key_mode: z.enum(['random', 'polling']).default('random'),
 })
@@ -227,12 +237,31 @@ export interface CopyChannelResponse {
 // Multi-Key Management Types
 // ============================================================================
 
+// Last recorded outcome of probing one key of a multi-key channel.
+export interface KeyProbe {
+  result: 'ok' | 'error'
+  error_code?: string
+  last_probe_at: number
+}
+
 export interface KeyStatus {
   index: number
   status: number // 1: enabled, 2: manual disabled, 3: auto disabled
   disabled_time?: number
   reason?: string
   key_preview?: string
+  // Last recorded key probe result; absent when the key was never probed.
+  probe?: KeyProbe
+}
+
+export interface ProbeKeyResponse {
+  success: boolean
+  message?: string
+  error_code?: string
+  data?: {
+    key_index: number
+    probe: KeyProbe
+  }
 }
 
 export type MultiKeyConfirmAction = {

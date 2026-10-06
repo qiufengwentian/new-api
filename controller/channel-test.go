@@ -168,31 +168,21 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	group, _ := model.GetUserGroup(testUserID, false)
 	c.Set("group", group)
 
-	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	// A pinned keyIndex probes that exact key: the setup path selects it
+	// directly instead of the channel's next schedulable key, so disabled keys
+	// stay probeable and the polling cursor is not advanced. A nil keyIndex
+	// keeps today's behavior for every existing caller.
+	var newAPIError *types.NewAPIError
+	if keyIndex != nil {
+		newAPIError = middleware.SetupContextForChannelKeyIndex(c, channel, testModel, *keyIndex)
+	} else {
+		newAPIError = middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	}
 	if newAPIError != nil {
 		return testResult{
 			context:     c,
 			localErr:    newAPIError,
 			newAPIError: newAPIError,
-		}
-	}
-	// Key probe (ticket 01): when the caller pins the test to the channel's
-	// Nth key, replace the key selected by SetupContextForSelectedChannel before
-	// relay info is generated, so the pinned key's credentials reach the
-	// upstream and multi-key log attribution points at the probed row. A nil
-	// keyIndex keeps today's behavior for every existing caller.
-	if keyIndex != nil {
-		keys := channel.GetKeys()
-		if *keyIndex < 0 || *keyIndex >= len(keys) {
-			return testResult{
-				context:     c,
-				localErr:    fmt.Errorf("key index %d is out of range, channel %d has %d keys", *keyIndex, channel.Id, len(keys)),
-				newAPIError: types.NewError(fmt.Errorf("key index %d is out of range", *keyIndex), types.ErrorCodeChannelNoAvailableKey),
-			}
-		}
-		common.SetContextKey(c, constant.ContextKeyChannelKey, keys[*keyIndex])
-		if channel.ChannelInfo.IsMultiKey {
-			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, *keyIndex)
 		}
 	}
 
@@ -924,6 +914,118 @@ func TestChannel(c *gin.Context) {
 		"message": "",
 		"time":    consumedTime,
 	})
+}
+
+// ProbeChannelKey probes one key of a multi-key channel with a minimal real
+// upstream request and persists the outcome in the channel's per-key health
+// array, which stays index-aligned with the key list inside the channel_info
+// JSON column. Probing is free (no quota, no user billing) and reference-only:
+// results never feed scheduling, auto-disable, or channel status. Each
+// successful probe records the established 模型测试 consume log row.
+func ProbeChannelKey(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var request struct {
+		KeyIndex *int `json:"key_index"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil || request.KeyIndex == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "未指定要检测的密钥索引",
+		})
+		return
+	}
+	keyIndex := *request.KeyIndex
+
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "渠道不存在",
+		})
+		return
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "该渠道不是多密钥模式",
+		})
+		return
+	}
+	if keyIndex < 0 || keyIndex >= len(channel.GetKeys()) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "密钥索引超出范围",
+		})
+		return
+	}
+
+	testUserID, err := resolveChannelTestUserID(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	requestCtx := context.Background()
+	if c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
+	result := testChannel(requestCtx, channel, testUserID, "", "", false, &keyIndex)
+
+	// Persist the probe outcome in the channel_info JSON column. Hold the
+	// channel lock while writing so a concurrent key rebuild cannot shift the
+	// health array out of alignment with the key list.
+	health := model.ChannelKeyHealth{LastProbeAt: common.GetTimestamp()}
+	if result.localErr == nil && result.newAPIError == nil {
+		health.Result = model.ChannelKeyHealthResultOK
+	} else {
+		health.Result = model.ChannelKeyHealthResultError
+		if result.newAPIError != nil {
+			health.ErrorCode = string(result.newAPIError.GetErrorCode())
+		}
+	}
+	lock := model.GetChannelPollingLock(channel.Id)
+	lock.Lock()
+	channel.RecordMultiKeyKeyHealth(keyIndex, health)
+	updateErr := channel.Update()
+	model.InitChannelCache()
+	lock.Unlock()
+	if updateErr != nil {
+		common.ApiError(c, updateErr)
+		return
+	}
+
+	probeData := gin.H{
+		"key_index": keyIndex,
+		"probe":     health,
+	}
+	if health.Result == model.ChannelKeyHealthResultOK {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    probeData,
+		})
+		return
+	}
+
+	message := "key probe failed"
+	if result.localErr != nil {
+		message = result.localErr.Error()
+	} else if result.newAPIError != nil {
+		message = result.newAPIError.Error()
+	}
+	failure := gin.H{
+		"success": false,
+		"message": message,
+		"data":    probeData,
+	}
+	if result.newAPIError != nil {
+		failure["error_code"] = result.newAPIError.GetErrorCode()
+	}
+	c.JSON(http.StatusOK, failure)
 }
 
 // channelTestSummary records the outcome of one channel test cycle so the
