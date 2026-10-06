@@ -37,6 +37,7 @@ import type {
   GetChannelsResponse,
   MultiKeyManageParams,
   MultiKeyStatusResponse,
+  ProbeAllKeysResponse,
   ProbeKeyResponse,
   SearchChannelsParams,
   SearchChannelsResponse,
@@ -454,6 +455,22 @@ export async function probeMultiKey(
   const res = await api.post(
     `/api/channel/${channelId}/probe_key`,
     { key_index: keyIndex },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+/**
+ * Probe every key of a multi-key channel in one request. The server caps the
+ * batch concurrency and returns the per-key results plus a summary. Free and
+ * reference-only, like the single-key probe.
+ */
+export async function probeAllMultiKeys(
+  channelId: number
+): Promise<ProbeAllKeysResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/probe_all_keys`,
+    undefined,
     channelActionConfig()
   )
   return res.data

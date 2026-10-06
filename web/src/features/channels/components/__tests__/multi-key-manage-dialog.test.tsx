@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -26,7 +27,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
-import type { KeyStatus, ProbeKeyResponse } from '../../types'
+import type { KeyStatus, ProbeAllKeysResponse, ProbeKeyResponse } from '../../types'
 import { MultiKeyManageDialog } from '../dialogs/multi-key-manage-dialog'
 
 const fixtures = vi.hoisted(() => {
@@ -103,10 +104,31 @@ const keyStatusPayload: KeyStatus[] = [
   },
 ]
 
+const batchProbePayload: ProbeAllKeysResponse = {
+  success: true,
+  data: {
+    keys: [
+      { key_index: 0, probe: { result: 'ok', last_probe_at: 1700002000 } },
+      { key_index: 1, probe: { result: 'ok', last_probe_at: 1700002001 } },
+      {
+        key_index: 2,
+        probe: {
+          result: 'error',
+          error_code: 'invalid_api_key',
+          last_probe_at: 1700002002,
+        },
+      },
+    ],
+    summary: { tested: 3, available: 2, unavailable: 1 },
+  },
+}
+
 function mockChannelApi(
-  probe: (keyIndex: number) => Promise<ProbeKeyResponse>
+  probe: (keyIndex: number) => Promise<ProbeKeyResponse>,
+  probeAll?: () => Promise<ProbeAllKeysResponse>
 ) {
   let statusCalls = 0
+  let probeAllCalls = 0
   const probeCalls: number[] = []
   const post = vi
     .spyOn(api, 'post')
@@ -129,6 +151,12 @@ function mockChannelApi(
           },
         }
       }
+      if (url === '/api/channel/7/probe_all_keys') {
+        probeAllCalls++
+        if (!probeAll) throw new Error('unexpected batch probe request')
+        const response = await probeAll()
+        return { data: response }
+      }
       const keyIndex =
         (data as { key_index?: number } | undefined)?.key_index ?? -1
       probeCalls.push(keyIndex)
@@ -139,6 +167,7 @@ function mockChannelApi(
     post,
     statusCalls: () => statusCalls,
     probeCalls: () => probeCalls,
+    probeAllCalls: () => probeAllCalls,
   }
 }
 
@@ -302,6 +331,8 @@ it('disables the test buttons while a probe is in flight', async () => {
       screen.getAllByRole('button', { name: 'Test' }) as HTMLButtonElement[]
     ).every((button) => button.disabled)
   ).toBe(true)
+  // The batch button is mutually exclusive with an in-flight single-row probe.
+  expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeDisabled()
   // Clicking another row's Test while one is in flight is a no-op.
   const otherRow = rowContaining(table, '#3')
   await user.click(within(otherRow).getByRole('button', { name: 'Test' }))
@@ -318,6 +349,92 @@ it('disables the test buttons while a probe is in flight', async () => {
       screen.getAllByRole('button', { name: 'Test' }) as HTMLButtonElement[]
     ).every((button) => button.disabled)
   ).toBe(false)
+  // The batch button becomes available again once the single probe settles.
+  expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeEnabled()
+})
+
+it('probes all keys in one request, refreshes every row, and toasts the summary', async () => {
+  let resolveBatch: (() => void) | undefined
+  const { probeCalls, probeAllCalls } = mockChannelApi(
+    async () => ({ success: false, message: 'unexpected single probe' }),
+    () =>
+      new Promise<ProbeAllKeysResponse>((resolve) => {
+        resolveBatch = () => resolve(batchProbePayload)
+      })
+  )
+  const successSpy = vi.spyOn(toast, 'success').mockReturnValue(0)
+
+  const user = userEvent.setup()
+  renderDialog()
+  const table = await screen.findByRole('table')
+  const row2 = rowContaining(table, '#2')
+  await waitFor(() =>
+    expect(within(row2).queryByText('Not probed')).not.toBeNull()
+  )
+
+  await user.click(screen.getByRole('button', { name: 'Test All Keys' }))
+
+  // While the batch is in flight, every row probes, the batch button is
+  // locked, and no single-row probe may start.
+  expect(
+    (
+      screen.getAllByRole('button', { name: 'Test' }) as HTMLButtonElement[]
+    ).every((button) => button.disabled)
+  ).toBe(true)
+  expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeDisabled()
+  expect(probeAllCalls()).toBe(1)
+  expect(probeCalls()).toEqual([])
+
+  resolveBatch?.()
+  await waitFor(() =>
+    expect(
+      within(rowContaining(table, '#2')).queryByText('Available')
+    ).not.toBeNull()
+  )
+  // The never-probed row now shows its result; the failed row keeps its
+  // error code, refreshed by the batch.
+  expect(
+    within(rowContaining(table, '#3')).getByText('invalid_api_key')
+  ).toBeVisible()
+  expect(successSpy).toHaveBeenCalledWith(
+    'Probed 3 keys: 2 available, 1 unavailable'
+  )
+  // The batch left no probing state behind: every control is retryable.
+  expect(
+    (
+      screen.getAllByRole('button', { name: 'Test' }) as HTMLButtonElement[]
+    ).every((button) => !button.disabled)
+  ).toBe(true)
+  expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeEnabled()
+})
+
+it('falls back to a retryable state when the batch request fails', async () => {
+  const { probeAllCalls } = mockChannelApi(
+    async () => ({ success: false, message: 'unexpected single probe' }),
+    () => Promise.reject(new Error('network down'))
+  )
+
+  const user = userEvent.setup()
+  renderDialog()
+  await screen.findByRole('table')
+
+  await user.click(screen.getByRole('button', { name: 'Test All Keys' }))
+
+  await waitFor(() =>
+    expect(handleServerError).toHaveBeenCalledWith(
+      expect.any(Error),
+      'Failed to probe all keys'
+    )
+  )
+  // No fake in-flight state remains: every row's Test button and the batch
+  // button are retryable.
+  expect(
+    (
+      screen.getAllByRole('button', { name: 'Test' }) as HTMLButtonElement[]
+    ).every((button) => !button.disabled)
+  ).toBe(true)
+  expect(screen.getByRole('button', { name: 'Test All Keys' })).toBeEnabled()
+  expect(probeAllCalls()).toBe(1)
 })
 
 it('reports a probe response without a health payload as an error', async () => {

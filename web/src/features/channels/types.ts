@@ -264,6 +264,25 @@ export interface ProbeKeyResponse {
   }
 }
 
+// Batch probe of every key of a multi-key channel: per-key results (same
+// probe payload as the single-key endpoint) plus the run summary.
+export interface ProbeAllKeysResponse {
+  success: boolean
+  message?: string
+  error_code?: string
+  data?: {
+    keys: {
+      key_index: number
+      probe: KeyProbe
+    }[]
+    summary: {
+      tested: number
+      available: number
+      unavailable: number
+    }
+  }
+}
+
 export type MultiKeyConfirmAction = {
   type:
     | 'enable'

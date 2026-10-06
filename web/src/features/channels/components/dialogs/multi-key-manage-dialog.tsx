@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, RefreshCw, Trash2, Power, PowerOff } from 'lucide-react'
+import { Loader2, RefreshCw, Trash2, Power, PowerOff, Gauge } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -53,6 +53,7 @@ import {
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
   probeMultiKey,
+  probeAllMultiKeys,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import {
@@ -104,6 +105,9 @@ export function MultiKeyManageDialog({
   const [isPerformingAction, setIsPerformingAction] = useState(false)
   // Key index of the in-flight per-key probe; null when no probe is running.
   const [probingIndex, setProbingIndex] = useState<number | null>(null)
+  // True while the batch "probe all keys" request is in flight. Single-row
+  // probes and the batch button are mutually exclusive with it.
+  const [probingAll, setProbingAll] = useState(false)
 
   // Reset and load data when dialog opens
   useEffect(() => {
@@ -238,7 +242,7 @@ export function MultiKeyManageDialog({
   // re-schedules the key. The local row is refreshed from the response so the
   // column reflects the persisted health without a full reload.
   const handleTestKey = async (keyIndex: number) => {
-    if (!currentRow || probingIndex !== null) return
+    if (!currentRow || probingIndex !== null || probingAll) return
     setProbingIndex(keyIndex)
     try {
       const response = await probeMultiKey(currentRow.id, keyIndex)
@@ -254,6 +258,45 @@ export function MultiKeyManageDialog({
       handleServerError(error, t('Failed to probe key'))
     } finally {
       setProbingIndex(null)
+    }
+  }
+
+  // Probe every key of the channel in one request: the server runs the batch
+  // with capped concurrency and returns the per-key results plus a summary.
+  // Each visible row is refreshed from the response; a failed or
+  // interrupted request falls back to the retryable state without leaving
+  // any row stuck in the probing state.
+  const handleProbeAllKeys = async () => {
+    if (!currentRow || probingIndex !== null || probingAll) return
+    setProbingAll(true)
+    try {
+      const response = await probeAllMultiKeys(currentRow.id)
+      const data = response.data
+      if (!data) {
+        handleServerError(response, t('Failed to probe all keys'))
+        return
+      }
+      const probedByKey = new Map(
+        data.keys.map((entry) => [entry.key_index, entry.probe])
+      )
+      setKeys((prev) =>
+        prev.map((key) => {
+          const probe = probedByKey.get(key.index)
+          return probe ? { ...key, probe } : key
+        })
+      )
+      const { tested, available, unavailable } = data.summary
+      toast.success(
+        t('Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable', {
+          tested,
+          available,
+          unavailable,
+        })
+      )
+    } catch (error: unknown) {
+      handleServerError(error, t('Failed to probe all keys'))
+    } finally {
+      setProbingAll(false)
     }
   }
 
@@ -378,6 +421,19 @@ export function MultiKeyManageDialog({
               <Button
                 variant='outline'
                 size='sm'
+                onClick={handleProbeAllKeys}
+                disabled={probingIndex !== null || probingAll}
+              >
+                {probingAll ? (
+                  <Loader2 className='h-4 w-4 animate-spin' />
+                ) : (
+                  <Gauge className='h-4 w-4' />
+                )}
+                {t('Test All Keys')}
+              </Button>
+              <Button
+                variant='outline'
+                size='sm'
                 onClick={() => loadKeyStatus()}
                 disabled={isLoading}
               >
@@ -494,8 +550,8 @@ export function MultiKeyManageDialog({
                         keyIndex={key.index}
                         status={key.status}
                         canDelete={canEditSensitive}
-                        probeBusy={probingIndex !== null}
-                        isProbing={probingIndex === key.index}
+                        probeBusy={probingIndex !== null || probingAll}
+                        isProbing={probingAll || probingIndex === key.index}
                         onAction={setConfirmAction}
                         onProbe={handleTestKey}
                       />
