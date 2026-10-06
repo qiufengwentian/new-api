@@ -2,16 +2,24 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -475,4 +483,129 @@ func TestMultiKeySetChannelKeyStatusRejectsUnknownKey(t *testing.T) {
 
 	nonMultiKey := newMultiKeyTestChannel(t, "key-one", model.ChannelInfo{})
 	require.ErrorIs(t, model.SetChannelKeyStatus(nonMultiKey.Id, "key-one", common.ChannelStatusAutoDisabled, "upstream 401"), model.ErrChannelNotMultiKey)
+}
+
+// keyProbeUpstream stands in for the channel's upstream in the key-probe
+// pipeline test: it records the credentials and payload the pipeline sends and
+// answers the minimal chat request with a valid completion.
+type keyProbeUpstream struct {
+	server *httptest.Server
+
+	mu             sync.Mutex
+	authorizations []string
+	bodies         []string
+}
+
+func newKeyProbeUpstream(t *testing.T) *keyProbeUpstream {
+	t.Helper()
+	upstream := &keyProbeUpstream{}
+	upstream.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstream.mu.Lock()
+		upstream.authorizations = append(upstream.authorizations, r.Header.Get("Authorization"))
+		upstream.bodies = append(upstream.bodies, string(body))
+		upstream.mu.Unlock()
+		if strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-key-probe","object":"chat.completion","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.server.Close)
+	return upstream
+}
+
+func (u *keyProbeUpstream) recorded() (authorizations, bodies []string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.authorizations...), append([]string(nil), u.bodies...)
+}
+
+func (u *keyProbeUpstream) calls() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.authorizations)
+}
+
+// The channel-test pipeline supports probing the Nth channel key by index:
+// pinned to a key, the minimal real request carries exactly that key's
+// credentials upstream (disabled keys included), an out-of-range index fails
+// before the upstream is touched, and probing leaves no billing trace.
+func TestChannelTestPipelineProbesKeyByIndex(t *testing.T) {
+	database, root := setupMultiKeyTestChannelDB(t)
+	// The probe runs the real relay path, which refuses a model without a
+	// configured price; self-use mode is the repo's supported way to run it.
+	withSelfUseModeEnabled(t)
+	service.InitHttpClient()
+	upstream := newKeyProbeUpstream(t)
+
+	channel := &model.Channel{
+		Name:    "key-probe-channel",
+		Type:    constant.ChannelTypeOpenAI,
+		Key:     "sk-key-a\nsk-key-b\nsk-key-c",
+		BaseURL: &upstream.server.URL,
+		Models:  "gpt-4o-mini",
+		Group:   "default",
+		Status:  common.ChannelStatusEnabled,
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       3,
+			MultiKeyStatusList: map[int]int{1: common.ChannelStatusManuallyDisabled},
+		},
+	}
+
+	for _, tc := range []struct {
+		name        string
+		keyIndex    *int
+		wantAuth    string
+		wantPayload string
+	}{
+		{
+			name:        "probes a disabled key by index",
+			keyIndex:    lo.ToPtr(1),
+			wantAuth:    "Bearer sk-key-b",
+			wantPayload: `{"model":"gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`,
+		},
+		{
+			name:        "probes the third key by index",
+			keyIndex:    lo.ToPtr(2),
+			wantAuth:    "Bearer sk-key-c",
+			wantPayload: `{"model":"gpt-4o-mini","stream":false,"messages":[{"role":"user","content":"hi"}],"max_tokens":16}`,
+		},
+		{
+			name:     "an out-of-range index fails before any upstream call",
+			keyIndex: lo.ToPtr(5),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			callsBefore := upstream.calls()
+			result := testChannel(context.Background(), channel, root.Id, "", "", false, tc.keyIndex)
+			if tc.wantAuth == "" {
+				require.Error(t, result.localErr, "an out-of-range key index must fail the probe")
+				require.NotNil(t, result.newAPIError)
+				assert.Equal(t, types.ErrorCodeChannelNoAvailableKey, result.newAPIError.GetErrorCode())
+				assert.Equal(t, callsBefore, upstream.calls(), "no upstream call may follow an out-of-range probe")
+				return
+			}
+			require.NoError(t, result.localErr, "probe failed: %+v", result.newAPIError)
+			require.Nil(t, result.newAPIError)
+
+			authorizations, bodies := upstream.recorded()
+			require.Greater(t, len(authorizations), callsBefore, "the pipeline must have called the upstream")
+			assert.Equal(t, tc.wantAuth, authorizations[len(authorizations)-1], "only the probed key's credentials may reach the upstream")
+			assert.JSONEq(t, tc.wantPayload, bodies[len(bodies)-1], "the minimal real request payload must stay unchanged under a pinned key")
+		})
+	}
+
+	// Probing never bills the user: the successful probes record their
+	// 模型测试 log rows but leave the user's quota untouched.
+	var user model.User
+	require.NoError(t, database.Select("quota, used_quota").First(&user, "id = ?", root.Id).Error)
+	assert.Zero(t, user.Quota)
+	assert.Zero(t, user.UsedQuota)
+
+	var probeLogs int64
+	require.NoError(t, database.Model(&model.Log{}).Where("user_id = ? AND token_name = ?", root.Id, "模型测试").Count(&probeLogs).Error)
+	assert.EqualValues(t, 2, probeLogs, "each successful probe records one 模型测试 consume log row")
 }
