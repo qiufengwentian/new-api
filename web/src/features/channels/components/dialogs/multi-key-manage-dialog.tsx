@@ -17,12 +17,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { Loader2, RefreshCw, Trash2, Power, PowerOff, Gauge } from 'lucide-react'
-import { useState, useEffect } from 'react'
+import {
+  Loader2,
+  RefreshCw,
+  Trash2,
+  Power,
+  PowerOff,
+  Gauge,
+  Eye,
+  EyeOff,
+} from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { CopyButton } from '@/components/copy-button'
 import { StaticDataTable } from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
 import { StatusBadge } from '@/components/status-badge'
@@ -36,12 +46,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
+import { ROLE } from '@/lib/roles'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import {
@@ -56,12 +69,14 @@ import {
   probeAllMultiKeys,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
+import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
 import {
   channelsQueryKeys,
   formatTimestamp,
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
   isDestructiveAction,
+  splitChannelKeys,
 } from '../../lib'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
 import { useChannels } from '../channels-provider'
@@ -85,6 +100,20 @@ export function MultiKeyManageDialog({
     currentUser,
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
+  )
+  // Key disclosure is super-admin only: the key read endpoint is root-only,
+  // so the entry is hidden (not merely disabled) for everyone else.
+  const canRevealKeys = currentUser?.role === ROLE.SUPER_ADMIN
+  const { channelKey, isChannelKeyLoading, handleRevealKey, verification } =
+    useChannelKeyDisclosure(open, currentRow?.id ?? null)
+  // Indices of rows whose plaintext is currently shown. Cleared whenever the
+  // dialog closes or the channel changes so no key material lingers.
+  const [revealedKeyIndices, setRevealedKeyIndices] = useState<Set<number>>(
+    () => new Set()
+  )
+  const revealedKeys = useMemo(
+    () => (channelKey ? splitChannelKeys(channelKey) : []),
+    [channelKey]
   )
 
   // Data state
@@ -116,6 +145,7 @@ export function MultiKeyManageDialog({
       setStatusFilter(null)
       loadKeyStatus(1, pageSize, null)
     }
+    setRevealedKeyIndices(new Set())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, currentRow?.id])
 
@@ -220,6 +250,18 @@ export function MultiKeyManageDialog({
     }
   }
 
+  const toggleKeyReveal = (keyIndex: number) => {
+    setRevealedKeyIndices((previous) => {
+      const next = new Set(previous)
+      if (next.has(keyIndex)) {
+        next.delete(keyIndex)
+      } else {
+        next.add(keyIndex)
+      }
+      return next
+    })
+  }
+
   const renderStatusBadge = (status: number) => {
     const config = getMultiKeyStatusConfig(status)
     return (
@@ -287,11 +329,14 @@ export function MultiKeyManageDialog({
       )
       const { tested, available, unavailable } = data.summary
       toast.success(
-        t('Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable', {
-          tested,
-          available,
-          unavailable,
-        })
+        t(
+          'Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable',
+          {
+            tested,
+            available,
+            unavailable,
+          }
+        )
       )
     } catch (error: unknown) {
       handleServerError(error, t('Failed to probe all keys'))
@@ -418,6 +463,21 @@ export function MultiKeyManageDialog({
             </Select>
 
             <div className='flex items-center gap-2'>
+              {canRevealKeys && (
+                <Button
+                  variant='outline'
+                  size='sm'
+                  onClick={() => void handleRevealKey()}
+                  disabled={isChannelKeyLoading || verification.isActive}
+                >
+                  {isChannelKeyLoading || verification.isActive ? (
+                    <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                  ) : (
+                    <Eye className='mr-2 h-4 w-4' />
+                  )}
+                  {t('Reveal keys')}
+                </Button>
+              )}
               <Button
                 variant='outline'
                 size='sm'
@@ -515,6 +575,59 @@ export function MultiKeyManageDialog({
                     cellClassName: 'font-mono text-sm',
                     cell: (key) => `#${key.index + 1}`,
                   },
+                  ...(canRevealKeys
+                    ? [
+                        {
+                          id: 'key',
+                          header: t('Key'),
+                          className: 'min-w-[220px]',
+                          cell: (key: KeyStatus) => {
+                            const plaintext = revealedKeys[key.index]
+                            const revealed = revealedKeyIndices.has(key.index)
+                            return (
+                              <div className='flex items-center gap-1'>
+                                <span
+                                  className={cn(
+                                    'min-w-0 flex-1 truncate font-mono text-sm',
+                                    !revealed && 'text-muted-foreground'
+                                  )}
+                                >
+                                  {revealed
+                                    ? (plaintext ?? key.key_preview ?? '')
+                                    : key.key_preview}
+                                </span>
+                                {plaintext !== undefined && (
+                                  <>
+                                    <Button
+                                      type='button'
+                                      variant='ghost'
+                                      size='icon'
+                                      onClick={() => toggleKeyReveal(key.index)}
+                                      aria-label={
+                                        revealed ? t('Hide key') : t('Show key')
+                                      }
+                                      title={
+                                        revealed ? t('Hide key') : t('Show key')
+                                      }
+                                    >
+                                      {revealed ? (
+                                        <EyeOff className='h-4 w-4' />
+                                      ) : (
+                                        <Eye className='h-4 w-4' />
+                                      )}
+                                    </Button>
+                                    <CopyButton
+                                      value={plaintext}
+                                      aria-label={t('Copy key')}
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            )
+                          },
+                        },
+                      ]
+                    : []),
                   {
                     id: 'status',
                     header: t('Status'),
@@ -593,6 +706,10 @@ export function MultiKeyManageDialog({
           )}
         </div>
       </Dialog>
+
+      {/* Step-up verification for key disclosure (passkey / 2FA, no
+          password fallback) */}
+      <SecureVerificationDialog {...verification.dialogProps} />
 
       {/* Confirmation Dialog */}
       <ConfirmDialog

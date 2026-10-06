@@ -119,6 +119,63 @@ it.each(['switch', 'close'] as const)(
   }
 )
 
+it('exposes the channel key after successful verification and fetch', async () => {
+  const proof = channelVerification()
+  const keyReply = deferredResponse<{
+    data: { success: boolean; data: { key: string } }
+  }>()
+  const post = vi.spyOn(api, 'post').mockImplementation((url) => {
+    if (url === '/api/verify') return Promise.resolve(proof)
+    if (url === '/api/channel/123/key') return keyReply.promise
+    throw new Error(`Unexpected POST ${url}`)
+  })
+  const user = userEvent.setup()
+  render(<Harness open channelId={123} />)
+  await user.click(screen.getByRole('button', { name: 'Reveal' }))
+  await user.type(
+    await screen.findByLabelText('Authenticator code or backup code'),
+    '123456'
+  )
+  await user.click(screen.getByRole('button', { name: 'Verify' }))
+  await act(async () => {
+    keyReply.resolve({
+      data: { success: true, data: { key: 'sk-disclosed' } },
+    })
+    await keyReply.promise
+  })
+  await waitFor(() =>
+    expect(screen.getByLabelText('Channel key')).toHaveTextContent(
+      'sk-disclosed'
+    )
+  )
+  expect(post.mock.calls.map(([url]) => url)).toContain('/api/channel/123/key')
+})
+
+it('keeps the channel key hidden when the verified fetch fails', async () => {
+  const proof = channelVerification()
+  vi.spyOn(api, 'post').mockImplementation((url) => {
+    if (url === '/api/verify') return Promise.resolve(proof)
+    if (url === '/api/channel/123/key') {
+      return Promise.resolve({
+        data: { success: false, message: 'key read rejected' },
+      })
+    }
+    throw new Error(`Unexpected POST ${url}`)
+  })
+  const user = userEvent.setup()
+  render(<Harness open channelId={123} />)
+  await user.click(screen.getByRole('button', { name: 'Reveal' }))
+  await user.type(
+    await screen.findByLabelText('Authenticator code or backup code'),
+    '123456'
+  )
+  await user.click(screen.getByRole('button', { name: 'Verify' }))
+  await waitFor(() =>
+    expect(screen.getByLabelText('Channel key')).toHaveTextContent('Hidden')
+  )
+  expect(screen.queryByText('sk-disclosed')).not.toBeInTheDocument()
+})
+
 it('cancels a pending verification when the selected channel changes', async () => {
   channelVerification()
   const reply = deferredResponse<{
