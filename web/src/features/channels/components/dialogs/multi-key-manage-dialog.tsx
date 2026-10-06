@@ -65,11 +65,10 @@ import {
   enableAllMultiKeys,
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
-  probeMultiKey,
-  probeAllMultiKeys,
 } from '../../api'
 import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
 import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
+import { useMultiKeyProbe } from '../../hooks/use-multi-key-probe'
 import {
   channelsQueryKeys,
   formatTimestamp,
@@ -132,11 +131,8 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
-  // Key index of the in-flight per-key probe; null when no probe is running.
-  const [probingIndex, setProbingIndex] = useState<number | null>(null)
-  // True while the batch "probe all keys" request is in flight. Single-row
-  // probes and the batch button are mutually exclusive with it.
-  const [probingAll, setProbingAll] = useState(false)
+  const { probingIndex, probingAll, handleTestKey, handleProbeAllKeys } =
+    useMultiKeyProbe(currentRow?.id ?? null, setKeys)
 
   // Reset and load data when dialog opens
   useEffect(() => {
@@ -277,72 +273,6 @@ export function MultiKeyManageDialog({
   const formatKeyTimestamp = (timestamp?: number) => {
     if (!timestamp) return '-'
     return formatTimestamp(timestamp)
-  }
-
-  // Probe one key with a minimal real upstream request. The result is
-  // reference-only: it updates the row's Probe column but never disables or
-  // re-schedules the key. The local row is refreshed from the response so the
-  // column reflects the persisted health without a full reload.
-  const handleTestKey = async (keyIndex: number) => {
-    if (!currentRow || probingIndex !== null || probingAll) return
-    setProbingIndex(keyIndex)
-    try {
-      const response = await probeMultiKey(currentRow.id, keyIndex)
-      const probe = response.data?.probe
-      if (!probe) {
-        handleServerError(response, t('Failed to probe key'))
-        return
-      }
-      setKeys((prev) =>
-        prev.map((key) => (key.index === keyIndex ? { ...key, probe } : key))
-      )
-    } catch (error: unknown) {
-      handleServerError(error, t('Failed to probe key'))
-    } finally {
-      setProbingIndex(null)
-    }
-  }
-
-  // Probe every key of the channel in one request: the server runs the batch
-  // with capped concurrency and returns the per-key results plus a summary.
-  // Each visible row is refreshed from the response; a failed or
-  // interrupted request falls back to the retryable state without leaving
-  // any row stuck in the probing state.
-  const handleProbeAllKeys = async () => {
-    if (!currentRow || probingIndex !== null || probingAll) return
-    setProbingAll(true)
-    try {
-      const response = await probeAllMultiKeys(currentRow.id)
-      const data = response.data
-      if (!data) {
-        handleServerError(response, t('Failed to probe all keys'))
-        return
-      }
-      const probedByKey = new Map(
-        data.keys.map((entry) => [entry.key_index, entry.probe])
-      )
-      setKeys((prev) =>
-        prev.map((key) => {
-          const probe = probedByKey.get(key.index)
-          return probe ? { ...key, probe } : key
-        })
-      )
-      const { tested, available, unavailable } = data.summary
-      toast.success(
-        t(
-          'Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable',
-          {
-            tested,
-            available,
-            unavailable,
-          }
-        )
-      )
-    } catch (error: unknown) {
-      handleServerError(error, t('Failed to probe all keys'))
-    } finally {
-      setProbingAll(false)
-    }
   }
 
   const renderProbeCell = (key: KeyStatus) => {
