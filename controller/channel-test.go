@@ -69,7 +69,7 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
-func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, keyIndex *int) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -174,6 +174,25 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 			context:     c,
 			localErr:    newAPIError,
 			newAPIError: newAPIError,
+		}
+	}
+	// Key probe (ticket 01): when the caller pins the test to the channel's
+	// Nth key, replace the key selected by SetupContextForSelectedChannel before
+	// relay info is generated, so the pinned key's credentials reach the
+	// upstream and multi-key log attribution points at the probed row. A nil
+	// keyIndex keeps today's behavior for every existing caller.
+	if keyIndex != nil {
+		keys := channel.GetKeys()
+		if *keyIndex < 0 || *keyIndex >= len(keys) {
+			return testResult{
+				context:     c,
+				localErr:    fmt.Errorf("key index %d is out of range, channel %d has %d keys", *keyIndex, channel.Id, len(keys)),
+				newAPIError: types.NewError(fmt.Errorf("key index %d is out of range", *keyIndex), types.ErrorCodeChannelNoAvailableKey),
+			}
+		}
+		common.SetContextKey(c, constant.ContextKeyChannelKey, keys[*keyIndex])
+		if channel.ChannelInfo.IsMultiKey {
+			common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, *keyIndex)
 		}
 	}
 
@@ -874,7 +893,7 @@ func TestChannel(c *gin.Context) {
 	if c.Request != nil {
 		requestCtx = c.Request.Context()
 	}
-	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream, nil)
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
@@ -921,7 +940,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	summary := channelTestSummary{}
 	isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 	tik := time.Now()
-	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel), nil)
 	milliseconds := time.Since(tik).Milliseconds()
 	if ctx.Err() != nil {
 		return summary
