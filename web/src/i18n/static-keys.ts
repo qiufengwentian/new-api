@@ -929,9 +929,7 @@ export const STATIC_I18N_KEYS = [
   'This contribution no longer exists.',
   'This contribution was ended because the upstream rejected the key, so it cannot be revoked.',
   'Dead',
-  'Revoked',
   'The upstream rejected this key',
-  'You revoked this contribution',
   // Reward subscription badges held in CONTRIBUTION_SUBSCRIPTION_STATUS_BADGES and
   // rendered at runtime by contributionSubscriptionStatusBadge.
   'Active',

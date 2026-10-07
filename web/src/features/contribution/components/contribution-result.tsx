@@ -30,10 +30,10 @@ type ContributionResultProps = {
 }
 
 /**
- * Confirms an accepted contribution. The key is only ever shown masked, and the
- * reward reports exactly what was granted: the upstream it was earned for, the
- * plan, the quota consumed and the expiry. A redundant submission renders no
- * reward, because the server grants none.
+ * Confirms an accepted contribution. The plaintext key and its fingerprint never
+ * leave the backend, so the view reports only the reward: the upstream it was
+ * earned for, the plan, the quota consumed and the expiry. A redundant submission
+ * renders no reward, because the server grants none.
  */
 export function ContributionResult(props: ContributionResultProps) {
   const { t } = useTranslation()
@@ -45,9 +45,6 @@ export function ContributionResult(props: ContributionResultProps) {
     <Alert>
       <AlertTitle>{t('Contribution submitted')}</AlertTitle>
       <AlertDescription className='space-y-2 text-sm'>
-        <p>
-          {t('Key mask')}: {contribution.key_mask}
-        </p>
         {props.result.redundant ? (
           <p>
             {t(

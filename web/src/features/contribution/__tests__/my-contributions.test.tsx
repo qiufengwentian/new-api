@@ -27,9 +27,10 @@ import type { ContributionMineData, ContributionSummary } from '../types'
 
 vi.mock('../api')
 
-// The three states a contribution can be in, each with the reward it did or did
-// not earn: a live record with an active subscription, one the upstream killed,
-// and one the contributor withdrew.
+// The two record states the list can show, each with the reward it did or did
+// not earn: a live record with an active subscription and one the upstream
+// killed. A record the contributor withdrew is absent from the API response,
+// so it is not part of the fixture.
 const contributions: ContributionSummary[] = [
   {
     id: 3,
@@ -39,7 +40,6 @@ const contributions: ContributionSummary[] = [
     status: 'active',
     reason: '',
     reason_time: 0,
-    key_mask: '************',
     subscription_id: 9,
     subscription_status: 'active',
     subscription: {
@@ -60,7 +60,6 @@ const contributions: ContributionSummary[] = [
     status: 'dead',
     reason: 'upstream_unauthorized',
     reason_time: 1_700_100_000,
-    key_mask: '************',
     subscription_id: 10,
     subscription_status: 'cancelled',
     subscription: {
@@ -72,21 +71,6 @@ const contributions: ContributionSummary[] = [
     },
     reward_granted: true,
     created_time: 1_699_000_000,
-  },
-  {
-    id: 1,
-    entry_code: 'HJKMPQRS',
-    channel_type: 14,
-    channel_type_name: 'Anthropic',
-    status: 'revoked',
-    reason: 'user_revoked',
-    reason_time: 1_700_200_000,
-    key_mask: '************',
-    subscription_id: 0,
-    subscription_status: '',
-    subscription: null,
-    reward_granted: false,
-    created_time: 1_698_000_000,
   },
 ]
 
@@ -106,8 +90,8 @@ beforeEach(() => {
   vi.mocked(getMyContributions).mockReset()
 })
 
-// Every state reads truthfully: the status, the reason it ended and the state of
-// the reward it earned.
+// Both states the list can show read truthfully: the status, the reason the record
+// ended and the state of the reward it earned.
 it('renders every contribution state with its reason and reward', async () => {
   renderList({ items: contributions, summary: { entry_code_count: 1 } })
 
@@ -122,22 +106,6 @@ it('renders every contribution state with its reason and reward', async () => {
     within(deadRow).getByText('The upstream rejected this key')
   ).toBeInTheDocument()
   expect(within(deadRow).getByText('Invalidated')).toBeInTheDocument()
-
-  const revokedRow = screen.getByRole('row', { name: /Anthropic/ })
-  expect(within(revokedRow).getByText('Revoked')).toBeInTheDocument()
-  expect(
-    within(revokedRow).getByText('You revoked this contribution')
-  ).toBeInTheDocument()
-  expect(within(revokedRow).getByText('No reward')).toBeInTheDocument()
-})
-
-// The list only ever shows the display mask the backend stores; the plaintext key
-// is not part of the contract at all.
-it('shows the stored key mask for every record', async () => {
-  renderList({ items: contributions, summary: { entry_code_count: 1 } })
-
-  await screen.findByRole('row', { name: /OpenAI/ })
-  expect(screen.getAllByText('************')).toHaveLength(3)
 })
 
 it('reports how many upstreams (distinct codes) already reward the account', async () => {
@@ -156,13 +124,9 @@ it('offers the revoke action on a live record only', async () => {
 
   const activeRow = await screen.findByRole('row', { name: /OpenAI/ })
   const deadRow = screen.getByRole('row', { name: /Azure/ })
-  const revokedRow = screen.getByRole('row', { name: /Anthropic/ })
 
   expect(
     within(deadRow).getByRole('button', { name: 'Revoke' })
-  ).toBeDisabled()
-  expect(
-    within(revokedRow).getByRole('button', { name: 'Revoke' })
   ).toBeDisabled()
 
   await user.click(within(activeRow).getByRole('button', { name: 'Revoke' }))
@@ -172,8 +136,13 @@ it('offers the revoke action on a live record only', async () => {
   ).toBeInTheDocument()
 })
 
-it('shows an empty state before the first contribution', async () => {
+// The list empty state is neutral: a contributor who has withdrawn everything
+// still contributed, so the title must not claim they never have.
+it('shows a neutral empty state when no records remain', async () => {
   renderList({ items: [], summary: { entry_code_count: 0 } })
 
-  expect(await screen.findByText('No contributions yet')).toBeInTheDocument()
+  expect(await screen.findByText('No contributions')).toBeInTheDocument()
+  expect(
+    screen.getByText('Contribute an upstream key and it will show up here.')
+  ).toBeInTheDocument()
 })

@@ -83,7 +83,6 @@ function acceptedSubmission(
         status: 'active',
         reason: '',
         reason_time: 0,
-        key_mask: '************',
         subscription_id: 0,
         subscription_status: '',
         subscription: null,

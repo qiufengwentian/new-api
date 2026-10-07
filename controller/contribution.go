@@ -395,10 +395,12 @@ func GetContributionCatalog(c *gin.Context) {
 // GET /api/contribution/mine
 // ---------------------------------------------------------------------------
 
-// GetMyContributions lists the signed-in user's own contributions, newest first,
-// together with the account's contribution summary. Each record is reported with
-// its display mask only: the plaintext key and the key fingerprint never leave the
-// database.
+// GetMyContributions lists the signed-in user's own live and dead contributions,
+// newest first, together with the account's contribution summary. A record the
+// contributor has withdrawn is absent from the list rather than rendered as a
+// terminal row: its trace survives in the audit log instead. Each listed record
+// carries display fields only: the plaintext key and the fingerprint
+// never leave the database.
 func GetMyContributions(c *gin.Context) {
 	userId := c.GetInt("id")
 	contributions, err := model.GetContributionsByUser(userId)
@@ -407,6 +409,13 @@ func GetMyContributions(c *gin.Context) {
 		common.ApiError(c, errors.New("the contributions could not be read"))
 		return
 	}
+
+	// A withdrawn record no longer concerns the list, so it is excluded here, in
+	// the user-facing read only: the all-states read the liveness probe and the
+	// withdrawal endpoint rely on is left as it is.
+	contributions = slices.DeleteFunc(contributions, func(record model.Contribution) bool {
+		return record.Status == model.ContributionStatusRevoked
+	})
 
 	// A record points at the reward instance it produced; caching the lookup keeps a
 	// long list from re-reading the same subscription. The plan titles are cached the
@@ -828,10 +837,10 @@ func contributionSubscriptionSummary(subscription *model.UserSubscription, planT
 
 // contributionSummary is the one user-visible shape of a contribution record,
 // shared by the submit response, the withdrawal response and the contribution
-// list. It carries the mask only: the plaintext key and the fingerprint never
-// leave the database. The channel type is named by the shared service resolver,
-// and subscription is the reward instance the record points at, or nil when it
-// granted none or the instance is gone.
+// list. It carries display fields only: the plaintext key and the fingerprint
+// never leave the database. The channel type is named by the shared service
+// resolver, and subscription is the reward instance the record points at, or
+// nil when it granted none or the instance is gone.
 //
 // planTitles is the request-scoped plan-title cache: the list endpoint shares one
 // map across its rows, so a page of contributions that were all rewarded from the
@@ -863,7 +872,6 @@ func contributionSummary(c *gin.Context, contribution *model.Contribution, subsc
 		"status":              contribution.Status,
 		"reason":              contribution.Reason,
 		"reason_time":         contribution.ReasonTime,
-		"key_mask":            contribution.KeyMask,
 		"subscription_id":     contribution.SubscriptionId,
 		"subscription_status": subscriptionStatus,
 		"subscription":        contributionSubscriptionSummary(subscription, planTitle),

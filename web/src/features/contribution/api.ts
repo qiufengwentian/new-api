@@ -37,7 +37,8 @@ export async function getContributionCatalog(): Promise<ContributionCatalogRespo
 
 /**
  * Reads the signed-in user's own contributions, newest first, with the account's
- * contribution summary. Only the stored key mask is returned, never the key.
+ * contribution summary. The plaintext key and its fingerprint never leave the
+ * database; the response carries display fields only.
  */
 export async function getMyContributions(): Promise<ContributionMineResponse> {
   const res = await api.get('/api/contribution/mine')

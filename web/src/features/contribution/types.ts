@@ -76,7 +76,6 @@ export interface ContributionSummary {
   status: string
   reason: string
   reason_time: number
-  key_mask: string
   subscription_id: number
   /** The reward instance's status, or an empty string when the record granted none. */
   subscription_status: string

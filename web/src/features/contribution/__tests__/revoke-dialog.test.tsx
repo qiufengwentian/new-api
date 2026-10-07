@@ -39,7 +39,6 @@ const activeContribution: ContributionSummary = {
   status: 'active',
   reason: '',
   reason_time: 0,
-  key_mask: '************',
   subscription_id: 9,
   subscription_status: 'active',
   subscription: {

@@ -701,8 +701,7 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	record := contributionRecordOf(t, response)
 	assert.Equal(t, entryCode, record["entry_code"])
 	assert.Equal(t, "active", record["status"])
-	assert.NotEmpty(t, record["key_mask"])
-	assert.NotContains(t, fmt.Sprint(record["key_mask"]), submittedKey)
+	assert.NotContains(t, record, "key_mask", "the summary no longer carries the mask")
 	assert.Equal(t, false, data["redundant"])
 
 	// The reward is the plan the catalog entry carries, granted as a real
@@ -1247,8 +1246,7 @@ func TestContributionRevokeDisablesTheKeyCancelsTheRewardAndAudits(t *testing.T)
 	assert.Equal(t, model.ContributionStatusRevoked, record["status"])
 	assert.Equal(t, model.ContributionReasonUserRevoked, record["reason"])
 	assert.NotZero(t, record["reason_time"])
-	assert.NotEmpty(t, record["key_mask"])
-	assert.NotContains(t, fmt.Sprint(record["key_mask"]), fixture.key)
+	assert.NotContains(t, record, "key_mask", "the summary no longer carries the mask")
 	assert.Equal(t, "cancelled", record["subscription_status"], "the summary reports the reward's refreshed state")
 	assert.NotContains(t, recorder.Body.String(), fixture.key)
 
@@ -1359,8 +1357,9 @@ func contributionMineItemsById(t *testing.T, response map[string]any) (map[int]m
 }
 
 // The list is the contributor's own bookkeeping: the caller sees only their own
-// records, every state renders truthfully with its reason and reward, and the
-// summary counts the channel types that still reward the account.
+// live and dead records - a withdrawn one is absent from the list, not rendered -
+// each with its reason and reward, and the summary counts the upstreams that
+// still reward the account.
 func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *testing.T) {
 	db, _ := setupContributionCatalogTest(t)
 	handler := newContributionCatalogTestRouter()
@@ -1415,16 +1414,19 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	response := decodeContributionResponse(t, recorder)
 	byId, order := contributionMineItemsById(t, response)
 
-	require.Len(t, order, 5, "only the caller's own records are listed")
+	require.Len(t, order, 4, "only the caller's own live and dead records are listed")
 	assert.NotContains(t, order, foreign.Id)
-	assert.Equal(t, []int{dead.Id, liveOtherType.Id, revoked.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
+	assert.NotContains(t, order, revoked.Id, "a withdrawn record is absent from the list, not rendered")
+	assert.Equal(t, []int{dead.Id, liveOtherType.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
 
 	liveItem := byId[liveRewarded.Id]
 	assert.Equal(t, "ABCDEFGH", liveItem["entry_code"])
 	assert.Equal(t, "OpenAI", liveItem["channel_type_name"])
 	assert.Equal(t, model.ContributionStatusActive, liveItem["status"])
 	assert.Empty(t, liveItem["reason"])
-	assert.NotEmpty(t, liveItem["key_mask"])
+	for _, id := range order {
+		assert.NotContains(t, byId[id], "key_mask", "the summary no longer carries the mask")
+	}
 	require.NotNil(t, liveItem["subscription"], "an active rewarded contribution reports its instance")
 	rewardItem := liveItem["subscription"].(map[string]any)
 	assert.Equal(t, "Reward 1", rewardItem["plan_title"])
@@ -1442,12 +1444,6 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	assert.NotZero(t, deadItem["reason_time"])
 	require.NotNil(t, deadItem["subscription"], "a dead contribution still reports the reward it used to hold")
 	assert.Equal(t, "cancelled", deadItem["subscription"].(map[string]any)["status"])
-
-	revokedItem := byId[revoked.Id]
-	assert.Equal(t, model.ContributionStatusRevoked, revokedItem["status"])
-	assert.Equal(t, model.ContributionReasonUserRevoked, revokedItem["reason"])
-	assert.NotZero(t, revokedItem["reason_time"])
-	assert.Nil(t, revokedItem["subscription"])
 
 	// The catalog entry names channel type 1; channel type 3 has none and falls back
 	// to the built-in channel type name.
