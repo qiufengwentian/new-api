@@ -837,10 +837,10 @@ func contributionSubscriptionSummary(subscription *model.UserSubscription, planT
 
 // contributionSummary is the one user-visible shape of a contribution record,
 // shared by the submit response, the withdrawal response and the contribution
-// list. It carries the mask only: the plaintext key and the fingerprint never
-// leave the database. The channel type is named by the shared service resolver,
-// and subscription is the reward instance the record points at, or nil when it
-// granted none or the instance is gone.
+// list. It carries display fields only: the plaintext key and the fingerprint
+// never leave the database. The channel type is named by the shared service
+// resolver, and subscription is the reward instance the record points at, or
+// nil when it granted none or the instance is gone.
 //
 // planTitles is the request-scoped plan-title cache: the list endpoint shares one
 // map across its rows, so a page of contributions that were all rewarded from the
@@ -872,7 +872,6 @@ func contributionSummary(c *gin.Context, contribution *model.Contribution, subsc
 		"status":              contribution.Status,
 		"reason":              contribution.Reason,
 		"reason_time":         contribution.ReasonTime,
-		"key_mask":            contribution.KeyMask,
 		"subscription_id":     contribution.SubscriptionId,
 		"subscription_status": subscriptionStatus,
 		"subscription":        contributionSubscriptionSummary(subscription, planTitle),

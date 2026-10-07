@@ -701,8 +701,7 @@ func TestContributionSubmitPoolsTheKeyAndRecordsIt(t *testing.T) {
 	record := contributionRecordOf(t, response)
 	assert.Equal(t, entryCode, record["entry_code"])
 	assert.Equal(t, "active", record["status"])
-	assert.NotEmpty(t, record["key_mask"])
-	assert.NotContains(t, fmt.Sprint(record["key_mask"]), submittedKey)
+	assert.NotContains(t, record, "key_mask", "the summary no longer carries the mask")
 	assert.Equal(t, false, data["redundant"])
 
 	// The reward is the plan the catalog entry carries, granted as a real
@@ -1247,8 +1246,7 @@ func TestContributionRevokeDisablesTheKeyCancelsTheRewardAndAudits(t *testing.T)
 	assert.Equal(t, model.ContributionStatusRevoked, record["status"])
 	assert.Equal(t, model.ContributionReasonUserRevoked, record["reason"])
 	assert.NotZero(t, record["reason_time"])
-	assert.NotEmpty(t, record["key_mask"])
-	assert.NotContains(t, fmt.Sprint(record["key_mask"]), fixture.key)
+	assert.NotContains(t, record, "key_mask", "the summary no longer carries the mask")
 	assert.Equal(t, "cancelled", record["subscription_status"], "the summary reports the reward's refreshed state")
 	assert.NotContains(t, recorder.Body.String(), fixture.key)
 
@@ -1426,7 +1424,9 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	assert.Equal(t, "OpenAI", liveItem["channel_type_name"])
 	assert.Equal(t, model.ContributionStatusActive, liveItem["status"])
 	assert.Empty(t, liveItem["reason"])
-	assert.NotEmpty(t, liveItem["key_mask"])
+	for _, id := range order {
+		assert.NotContains(t, byId[id], "key_mask", "the summary no longer carries the mask")
+	}
 	require.NotNil(t, liveItem["subscription"], "an active rewarded contribution reports its instance")
 	rewardItem := liveItem["subscription"].(map[string]any)
 	assert.Equal(t, "Reward 1", rewardItem["plan_title"])
