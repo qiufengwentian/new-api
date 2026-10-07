@@ -1095,6 +1095,7 @@ func TestSecurityEnrollmentPasskeyProofProtectsChannelKeyRead(t *testing.T) {
 
 	router := gin.New()
 	router.POST("/api/channel/:id/key", middleware.RootAuth(), middleware.SecureVerificationRequired(), GetChannelKey)
+	readStart := time.Now().Unix()
 	for _, test := range []struct {
 		name, path, proof, code, key string
 		status                       int
@@ -1122,12 +1123,29 @@ func TestSecurityEnrollmentPasskeyProofProtectsChannelKeyRead(t *testing.T) {
 			}
 		})
 	}
+	readEnd := time.Now().Unix()
 	var logs []model.AuditLog
 	require.NoError(t, model.LOG_DB.Where("action = ?", "channel.key_view").Find(&logs).Error)
 	require.Len(t, logs, 1)
+	// The operation audit records who read which channel when, and must
+	// never carry key material or the one-shot proof itself.
+	entry := logs[0]
+	assert.Equal(t, model.AuditCategoryOperation, entry.Category, "key disclosure is an operation-category audit event")
+	assert.EqualValues(t, user.Id, entry.UserId)
+	assert.Equal(t, "enrollment-user", entry.Username)
+	assert.EqualValues(t, common.RoleRootUser, entry.ActorRole)
+	assert.GreaterOrEqual(t, entry.CreatedAt, readStart)
+	assert.LessOrEqual(t, entry.CreatedAt, readEnd)
+	require.NotNil(t, entry.Other.Op)
+	assert.Equal(t, "channel.key_view", entry.Other.Op.Action)
 	encodedLogs, err := common.Marshal(logs)
 	require.NoError(t, err)
+	// The audited channel is identified by its id and name in the
+	// structured op params (never by key material).
+	assert.Contains(t, string(encodedLogs), `"id":123`)
+	assert.Contains(t, string(encodedLogs), `"name":"first"`)
 	assert.NotContains(t, string(encodedLogs), "first-channel-secret")
+	assert.NotContains(t, string(encodedLogs), "second-channel-secret")
 	assert.NotContains(t, string(encodedLogs), proof.ProofToken)
 
 	response = securityEnrollmentRequest("POST", "/api/user/passkey/verify/begin", `{"scope":"passkey.delete"}`, "", identity, PasskeyVerifyBegin)

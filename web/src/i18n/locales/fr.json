@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Projets liés",
     "footer.defaultCopyright": "Tous droits réservés.",
-    "footer.newapi.projectAttributionSuffix": "Tous droits réservés. Conçu et développé par les contributeurs du projet.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Tous droits réservés. Conçu et développé par les contributeurs du projet.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "Pour les canaux personnalisés avancés, ceci ne s’applique qu’aux routes /v1/responses sans conversion de protocole.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Pour les canaux ajoutés après le 10 mai 2025, pas besoin de supprimer \".\" des noms de modèles lors du déploiement",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Pour les déploiements privés, format : https://fastgpt.run/api/openapi",
@@ -5019,6 +5019,10 @@
     "Reveal API key": "Afficher la clé API",
     "Reveal full keys": "Afficher les clés complètes",
     "Reveal key": "Révéler la clé",
+    "Reveal keys": "Révéler les clés",
+    "Show key": "Révéler la clé",
+    "Hide key": "Masquer la clé",
+    "Copy key": "Copier la clé",
     "Revenue": "Revenu",
     "Review & initialize": "Vérifier et initialiser",
     "Review and confirm the selected prices.": "Vérifiez et confirmez les prix sélectionnés.",
@@ -5818,6 +5822,7 @@
     "Test Model": "Tester le modèle",
     "Test models and prompts from the browser": "Tester les modèles et les prompts depuis le navigateur",
     "Test selected models": "Tester les modèles sélectionnés",
+    "Test this key": "Tester cette clé",
     "Testing all enabled channels started. Please refresh to see results.": "Test de tous les canaux activés démarré. Veuillez actualiser pour voir les résultats.",
     "Testing...": "Test en cours...",
     "Text": "Texte",
@@ -6960,6 +6965,12 @@
     "Only a live contribution can be revoked.": "Seule une contribution active peut être révoquée.",
     "You have brought in {{count}} upstreams.": "Vous avez apporté {{count}} amonts.",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "Un upstream contributif lie le canal hôte multi-clés et le plan de récompense qui reçoivent les clés utilisateur.",
-    "Select a valid upstream from the list": "Sélectionnez un upstream valide dans la liste"
+    "Select a valid upstream from the list": "Sélectionnez un upstream valide dans la liste",
+    "Probe": "Sonde",
+    "Not probed": "Non sondé",
+    "Failed to probe key": "Échec de la sonde de clé",
+    "Test All Keys": "Tester toutes les clés",
+    "Failed to probe all keys": "Échec de la sonde de toutes les clés",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "{{tested}} clés sondées : {{available}} disponibles, {{unavailable}} indisponibles"
   }
 }

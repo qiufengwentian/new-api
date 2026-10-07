@@ -835,7 +835,7 @@ func validateContributionKey(c *gin.Context, hostChannel *model.Channel, key str
 		common.SysError(fmt.Sprintf("contribution key validation could not resolve a test user: %v", err))
 		return false
 	}
-	result := testChannel(c.Request.Context(), singleKeyProbeChannel(hostChannel, key), testUserID, "", string(constant.EndpointTypeOpenAI), false)
+	result := testChannel(c.Request.Context(), singleKeyProbeChannel(hostChannel, key), testUserID, "", string(constant.EndpointTypeOpenAI), false, nil)
 	if result.localErr != nil || result.newAPIError != nil {
 		// The upstream body never carries the key, but the key is redacted anyway:
 		// an error text is not a place to discover a credential in.

@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "高级自定义渠道仅对 /v1/responses 且不做协议转换的路由生效。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
@@ -5019,6 +5019,10 @@
     "Reveal API key": "显示 API 密钥",
     "Reveal full keys": "查看完整密钥",
     "Reveal key": "显示密钥",
+    "Reveal keys": "显示密钥",
+    "Show key": "显示密钥",
+    "Hide key": "隐藏密钥",
+    "Copy key": "复制密钥",
     "Revenue": "收入",
     "Review & initialize": "审核并初始化",
     "Review and confirm the selected prices.": "确认所选模型的价格变更。",
@@ -5818,6 +5822,7 @@
     "Test Model": "测试模型",
     "Test models and prompts from the browser": "在浏览器中测试模型和提示词",
     "Test selected models": "测试所选模型",
+    "Test this key": "测试此密钥",
     "Testing all enabled channels started. Please refresh to see results.": "测试所有启用的渠道已开始。请刷新以查看结果。",
     "Testing...": "测试中...",
     "Text": "文本",
@@ -6960,6 +6965,12 @@
     "Only a live contribution can be revoked.": "只有生效中的贡献可以撤回。",
     "You have brought in {{count}} upstreams.": "你已凑到 {{count}} 个上游",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "可贡献上游将绑定接收用户密钥的多密钥承载渠道和奖励计划。",
-    "Select a valid upstream from the list": "请从列表中选择有效的上游"
+    "Select a valid upstream from the list": "请从列表中选择有效的上游",
+    "Probe": "检测",
+    "Not probed": "未检测",
+    "Failed to probe key": "密钥检测失败",
+    "Test All Keys": "测试全部密钥",
+    "Failed to probe all keys": "全部密钥检测失败",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "已检测 {{tested}} 个密钥：{{available}} 个可用，{{unavailable}} 个不可用"
   }
 }

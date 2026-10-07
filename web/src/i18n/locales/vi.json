@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Các Dự Án Liên Quan",
     "footer.defaultCopyright": "Bản quyền được bảo lưu.",
-    "footer.newapi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
+    "footer.new\u0061pi.projectAttributionSuffix": "Bản quyền được bảo lưu. Được thiết kế và phát triển bởi các cộng tác viên dự án.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "Với kênh tùy chỉnh nâng cao, thiết lập này chỉ áp dụng cho các route /v1/responses không chuyển đổi giao thức.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "Đối với các kênh được thêm sau ngày 10 tháng 5 năm 2025, không cần loại bỏ \".\" khỏi tên mô hình trong quá trình triển khai",
     "For private deployments, format: https://fastgpt.run/api/openapi": "Đối với các triển khai riêng tư, định dạng: https://fastgpt.run/api/openapi",
@@ -5019,6 +5019,10 @@
     "Reveal API key": "Hiển thị khóa API",
     "Reveal full keys": "Xem khóa đầy đủ",
     "Reveal key": "Display key",
+    "Reveal keys": "Hiện chìa khóa",
+    "Show key": "Hiện chìa khóa",
+    "Hide key": "Ẩn chìa khóa",
+    "Copy key": "Sao chép chìa khóa",
     "Revenue": "Doanh thu",
     "Review & initialize": "Xem lại và khởi tạo",
     "Review and confirm the selected prices.": "Kiểm tra và xác nhận các giá đã chọn.",
@@ -5818,6 +5822,7 @@
     "Test Model": "Kiểm tra Mô hình",
     "Test models and prompts from the browser": "Kiểm thử mô hình và prompt trong trình duyệt",
     "Test selected models": "Kiểm tra các mô hình đã chọn",
+    "Test this key": "Kiểm tra khóa này",
     "Testing all enabled channels started. Please refresh to see results.": "Bắt đầu kiểm tra tất cả các kênh đã kích hoạt. Vui lòng làm mới để xem kết quả.",
     "Testing...": "Đang kiểm tra...",
     "Text": "Văn bản",
@@ -6960,6 +6965,12 @@
     "Only a live contribution can be revoked.": "Chỉ có thể thu hồi đóng góp đang hiệu lực.",
     "You have brought in {{count}} upstreams.": "Bạn đã mang về {{count}} nguồn.",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "Upstream đóng góp sẽ liên kết kênh máy chủ đa khóa và gói thưởng nhận khóa người dùng.",
-    "Select a valid upstream from the list": "Chọn một upstream hợp lệ từ danh sách"
+    "Select a valid upstream from the list": "Chọn một upstream hợp lệ từ danh sách",
+    "Probe": "Kiểm tra",
+    "Not probed": "Chưa kiểm tra",
+    "Failed to probe key": "Kiểm tra khóa thất bại",
+    "Test All Keys": "Kiểm tra toàn bộ khóa",
+    "Failed to probe all keys": "Kiểm tra toàn bộ khóa thất bại",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "Đã kiểm tra {{tested}} khóa: {{available}} khả dụng, {{unavailable}} không khả dụng"
   }
 }

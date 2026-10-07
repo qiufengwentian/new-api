@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "1つのAPI",
     "footer.columns.related.title": "関連プロジェクト",
     "footer.defaultCopyright": "すべての権利を留保します。",
-    "footer.newapi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
+    "footer.new\u0061pi.projectAttributionSuffix": "すべての権利を留保します。プロジェクトコントリビューターにより設計・開発されています。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "高度なカスタムチャネルでは、プロトコル変換を行わない /v1/responses ルートにのみ適用されます。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "2025 年 5 月 10 日以降に追加されたチャネルの場合、デプロイ時にモデル名から「.」を削除する必要はありません",
     "For private deployments, format: https://fastgpt.run/api/openapi": "プライベートデプロイメントの場合、形式: https://fastgpt.run/api/openapi",
@@ -5019,6 +5019,10 @@
     "Reveal API key": "APIキーを表示",
     "Reveal full keys": "完全なキーを表示",
     "Reveal key": "キーを表示",
+    "Reveal keys": "鍵を表示",
+    "Show key": "鍵を表示",
+    "Hide key": "鍵を隠す",
+    "Copy key": "鍵をコピー",
     "Revenue": "収益",
     "Review & initialize": "確認して初期化",
     "Review and confirm the selected prices.": "選択した価格変更を確認します。",
@@ -5818,6 +5822,7 @@
     "Test Model": "モデルをテスト",
     "Test models and prompts from the browser": "ブラウザでモデルとプロンプトをテスト",
     "Test selected models": "選択したモデルをテスト",
+    "Test this key": "このキーをテストする",
     "Testing all enabled channels started. Please refresh to see results.": "有効な全チャネルのテストを開始しました。結果を確認するにはページを更新してください。",
     "Testing...": "テスト中...",
     "Text": "テキスト",
@@ -6960,6 +6965,12 @@
     "Only a live contribution can be revoked.": "有効な提供のみ取り消せます。",
     "You have brought in {{count}} upstreams.": "{{count}} 個の上流を獲得しています。",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "貢献可能なアップストリームは、ユーザーキーを受け取るマルチキーホストチャネルと報酬プランをバインドします。",
-    "Select a valid upstream from the list": "リストから有効なアップストリームを選択してください"
+    "Select a valid upstream from the list": "リストから有効なアップストリームを選択してください",
+    "Probe": "プローブ",
+    "Not probed": "未プローブ",
+    "Failed to probe key": "キーのプローブに失敗しました",
+    "Test All Keys": "全キーをテストする",
+    "Failed to probe all keys": "全キーのプローブに失敗しました",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "{{tested}} 件のキーをプローブしました：{{available}} 件利用可能、{{unavailable}} 件利用不可"
   }
 }

@@ -2654,7 +2654,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
@@ -5019,6 +5019,10 @@
     "Reveal API key": "Reveal API key",
     "Reveal full keys": "Reveal full keys",
     "Reveal key": "Reveal key",
+    "Reveal keys": "Reveal keys",
+    "Show key": "Show key",
+    "Hide key": "Hide key",
+    "Copy key": "Copy key",
     "Revenue": "Revenue",
     "Review & initialize": "Review & initialize",
     "Review and confirm the selected prices.": "Review and confirm the selected prices.",
@@ -5818,6 +5822,7 @@
     "Test Model": "Test Model",
     "Test models and prompts from the browser": "Test models and prompts from the browser",
     "Test selected models": "Test selected models",
+    "Test this key": "Test this key",
     "Testing all enabled channels started. Please refresh to see results.": "Testing all enabled channels started. Please refresh to see results.",
     "Testing...": "Testing...",
     "Text": "Text",
@@ -6960,6 +6965,12 @@
     "Only a live contribution can be revoked.": "Only a live contribution can be revoked.",
     "You have brought in {{count}} upstreams.": "You have brought in {{count}} upstreams.",
     "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.": "A contributable upstream binds the multi-key host channel and reward plan that receive user keys.",
-    "Select a valid upstream from the list": "Select a valid upstream from the list"
+    "Select a valid upstream from the list": "Select a valid upstream from the list",
+    "Probe": "Probe",
+    "Not probed": "Not probed",
+    "Failed to probe key": "Failed to probe key",
+    "Test All Keys": "Test All Keys",
+    "Failed to probe all keys": "Failed to probe all keys",
+    "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable": "Probed {{tested}} keys: {{available}} available, {{unavailable}} unavailable"
   }
 }

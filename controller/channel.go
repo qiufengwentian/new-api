@@ -1704,6 +1704,8 @@ type KeyStatus struct {
 	DisabledTime int64  `json:"disabled_time,omitempty"`
 	Reason       string `json:"reason,omitempty"`
 	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	// Last recorded key probe result; empty when the key has never been probed.
+	Probe *model.ChannelKeyHealth `json:"probe,omitempty"`
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1715,20 +1717,8 @@ func ManageMultiKeys(c *gin.Context) {
 		return
 	}
 
-	channel, err := model.GetChannelById(request.ChannelId, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "渠道不存在",
-		})
-		return
-	}
-
-	if !channel.ChannelInfo.IsMultiKey {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": "该渠道不是多密钥模式",
-		})
+	channel, ok := loadMultiKeyChannelOrReply(c, request.ChannelId)
+	if !ok {
 		return
 	}
 	if multiKeyActionRequiresSensitiveWrite(request.Action) &&
@@ -1806,12 +1796,18 @@ func ManageMultiKeys(c *gin.Context) {
 				keyPreview = key[:10] + "..."
 			}
 
+			var probe *model.ChannelKeyHealth
+			if health, exists := channel.GetMultiKeyKeyHealth(i); exists {
+				probe = &health
+			}
+
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
 				Index:        i,
 				Status:       status,
 				DisabledTime: disabledTime,
 				Reason:       reason,
 				KeyPreview:   keyPreview,
+				Probe:        probe,
 			})
 		}
 

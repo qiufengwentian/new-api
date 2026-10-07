@@ -69,7 +69,7 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 	return rootUser.Id, nil
 }
 
-func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, keyIndex *int) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -168,7 +168,16 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 	group, _ := model.GetUserGroup(testUserID, false)
 	c.Set("group", group)
 
-	newAPIError := middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	// A pinned keyIndex probes that exact key: the setup path selects it
+	// directly instead of the channel's next schedulable key, so disabled keys
+	// stay probeable and the polling cursor is not advanced. A nil keyIndex
+	// keeps today's behavior for every existing caller.
+	var newAPIError *types.NewAPIError
+	if keyIndex != nil {
+		newAPIError = middleware.SetupContextForChannelKeyIndex(c, channel, testModel, *keyIndex)
+	} else {
+		newAPIError = middleware.SetupContextForSelectedChannel(c, channel, testModel)
+	}
 	if newAPIError != nil {
 		return testResult{
 			context:     c,
@@ -874,7 +883,7 @@ func TestChannel(c *gin.Context) {
 	if c.Request != nil {
 		requestCtx = c.Request.Context()
 	}
-	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
+	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream, nil)
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,
@@ -907,6 +916,295 @@ func TestChannel(c *gin.Context) {
 	})
 }
 
+// loadMultiKeyChannelOrReply loads the channel by id and checks that it is in
+// multi-key mode. When it returns false it has already written the standard
+// error envelope (channel not found or not multi-key mode) and the caller
+// must return without writing a response.
+func loadMultiKeyChannelOrReply(c *gin.Context, channelId int) (*model.Channel, bool) {
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "渠道不存在",
+		})
+		return nil, false
+	}
+	if !channel.ChannelInfo.IsMultiKey {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "该渠道不是多密钥模式",
+		})
+		return nil, false
+	}
+	return channel, true
+}
+
+// ProbeChannelKey probes one key of a multi-key channel with a minimal real
+// upstream request and persists the outcome in the channel's per-key health
+// array, which stays index-aligned with the key list inside the channel_info
+// JSON column. Probing is free (no quota, no user billing) and reference-only:
+// results never feed scheduling, auto-disable, or channel status. Each
+// successful probe records the established 模型测试 consume log row.
+func ProbeChannelKey(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var request struct {
+		KeyIndex *int `json:"key_index"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil || request.KeyIndex == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "未指定要检测的密钥索引",
+		})
+		return
+	}
+	keyIndex := *request.KeyIndex
+
+	channel, ok := loadMultiKeyChannelOrReply(c, channelId)
+	if !ok {
+		return
+	}
+	if keyIndex < 0 || keyIndex >= len(channel.GetKeys()) {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "密钥索引超出范围",
+		})
+		return
+	}
+
+	testUserID, err := resolveChannelTestUserID(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	requestCtx := context.Background()
+	if c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
+	outcome := runKeyProbe(requestCtx, channel, testUserID, keyIndex)
+	if err := persistKeyProbeHealth(channel, []keyProbeOutcome{outcome}); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	probeData := gin.H{
+		"key_index": keyIndex,
+		"probe":     outcome.health,
+	}
+	if outcome.message == "" && outcome.probeErr == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data":    probeData,
+		})
+		return
+	}
+
+	failure := gin.H{
+		"success": false,
+		"message": outcome.message,
+		"data":    probeData,
+	}
+	if outcome.probeErr != nil {
+		failure["error_code"] = outcome.probeErr.GetErrorCode()
+	}
+	c.JSON(http.StatusOK, failure)
+}
+
+// keyProbeOutcome is the result of probing one key: its persisted health
+// entry plus the probe failure, when the upstream call did not succeed.
+type keyProbeOutcome struct {
+	keyIndex int
+	health   model.ChannelKeyHealth
+	// message and probeErr describe a failed probe; both are empty on
+	// success.
+	message  string
+	probeErr *types.NewAPIError
+}
+
+// runKeyProbe executes one pinned key probe through the channel-test pipeline
+// and builds the health entry the probe persists. The pinned path keeps the
+// probe free of scheduler effects: disabled keys stay probeable and the
+// polling cursor is not advanced. Probing is free (no quota, no user billing)
+// and reference-only; each successful probe records the established 模型测试
+// consume log row inside the pipeline.
+func runKeyProbe(ctx context.Context, channel *model.Channel, testUserID int, keyIndex int) keyProbeOutcome {
+	result := testChannel(ctx, channel, testUserID, "", "", false, &keyIndex)
+	outcome := keyProbeOutcome{
+		keyIndex: keyIndex,
+		health: model.ChannelKeyHealth{
+			LastProbeAt: common.GetTimestamp(),
+			Result:      model.ChannelKeyHealthResultOK,
+		},
+	}
+	if result.localErr == nil && result.newAPIError == nil {
+		return outcome
+	}
+	outcome.health.Result = model.ChannelKeyHealthResultError
+	if result.newAPIError != nil {
+		outcome.health.ErrorCode = string(result.newAPIError.GetErrorCode())
+		outcome.probeErr = result.newAPIError
+		outcome.message = result.newAPIError.Error()
+	} else {
+		outcome.message = result.localErr.Error()
+	}
+	return outcome
+}
+
+// persistKeyProbeHealth records finished probe outcomes in the channel's
+// per-key health array and pushes the channel to the database and cache. It
+// holds the channel's polling lock for the whole write so a concurrent key
+// rebuild cannot shift the health array out of alignment with the key list.
+func persistKeyProbeHealth(channel *model.Channel, outcomes []keyProbeOutcome) error {
+	if len(outcomes) == 0 {
+		return nil
+	}
+	lock := model.GetChannelPollingLock(channel.Id)
+	lock.Lock()
+	defer lock.Unlock()
+	for _, outcome := range outcomes {
+		channel.RecordMultiKeyKeyHealth(outcome.keyIndex, outcome.health)
+	}
+	updateErr := channel.Update()
+	model.InitChannelCache()
+	return updateErr
+}
+
+// keyProbeBatchConcurrency caps the peak number of simultaneous key probes of
+// one batch, so a large key list never opens unbounded upstream connections.
+const keyProbeBatchConcurrency = 5
+
+// ProbeAllChannelKeys probes every key of a multi-key channel — including
+// disabled keys — with capped concurrency and returns the per-key results
+// plus a summary in one response. It shares the single-key probe's execution
+// and persistence semantics: every outcome is written to the channel's
+// per-key health array and every successful probe records one 模型测试 consume
+// log row. A failed key does not stop the batch; only channel-level
+// problems (missing channel, non-multi-key channel) fail the endpoint.
+func ProbeAllChannelKeys(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	channel, ok := loadMultiKeyChannelOrReply(c, channelId)
+	if !ok {
+		return
+	}
+	testUserID, err := resolveChannelTestUserID(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	requestCtx := context.Background()
+	if c.Request != nil {
+		requestCtx = c.Request.Context()
+	}
+
+	outcomes, canceled := probeAllChannelKeys(requestCtx, channel, testUserID)
+	if canceled {
+		// The client went away mid-batch; stop without persisting a partial
+		// result set.
+		return
+	}
+	if err := persistKeyProbeHealth(channel, outcomes); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	available := 0
+	for _, outcome := range outcomes {
+		if outcome.health.Result == model.ChannelKeyHealthResultOK {
+			available++
+		}
+	}
+	probedKeys := make([]gin.H, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		probedKeys = append(probedKeys, gin.H{
+			"key_index": outcome.keyIndex,
+			"probe":     outcome.health,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data": gin.H{
+			"keys": probedKeys,
+			"summary": gin.H{
+				"tested":      len(outcomes),
+				"available":   available,
+				"unavailable": len(outcomes) - available,
+			},
+		},
+	})
+}
+
+// probeAllChannelKeys probes the channel's keys in a bounded worker pool —
+// the same jobs/results channel pattern as runChannelTestWorkers — capping
+// the peak concurrency at keyProbeBatchConcurrency. Each finished probe is
+// written at its own key index, so the result set stays aligned with the key
+// list regardless of completion order. It reports whether the context was
+// canceled mid-batch, in which case the remaining keys were skipped.
+func probeAllChannelKeys(ctx context.Context, channel *model.Channel, testUserID int) ([]keyProbeOutcome, bool) {
+	keys := channel.GetKeys()
+	if len(keys) == 0 {
+		return nil, false
+	}
+
+	workerCount := min(keyProbeBatchConcurrency, len(keys))
+	jobs := make(chan int)
+	results := make(chan keyProbeOutcome)
+
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case keyIndex, ok := <-jobs:
+					if !ok {
+						return
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					results <- runKeyProbe(ctx, channel, testUserID, keyIndex)
+				}
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobs)
+		for keyIndex := range len(keys) {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- keyIndex:
+			}
+		}
+	}()
+
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	outcomes := make([]keyProbeOutcome, len(keys))
+	for result := range results {
+		outcomes[result.keyIndex] = result
+	}
+	return outcomes, ctx.Err() != nil
+}
+
 // channelTestSummary records the outcome of one channel test cycle so the
 // system task can persist a per-run result for history.
 type channelTestSummary struct {
@@ -921,7 +1219,7 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 	summary := channelTestSummary{}
 	isChannelEnabled := channel.Status == common.ChannelStatusEnabled
 	tik := time.Now()
-	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel))
+	result := testChannel(ctx, channel, testUserID, "", "", shouldUseStreamForAutomaticChannelTest(channel), nil)
 	milliseconds := time.Since(tik).Milliseconds()
 	if ctx.Err() != nil {
 		return summary
