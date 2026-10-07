@@ -6888,6 +6888,8 @@
     "Contribution entry not found": "Entrée introuvable",
     "Contribution entry updated successfully": "Entrée mise à jour avec succès",
     "Contribution submitted": "Contribution soumise",
+    "Contributed keys": "Clés contribuées",
+    "(deleted/missing)": "(supprimé/introuvable)",
     "Created a contributable upstream entry": "A créé une entrée d'amont contribuable",
     "Delete upstream": "Supprimer l'amont",
     "Deleted a contributable upstream entry": "A supprimé une entrée d'amont contribuable",

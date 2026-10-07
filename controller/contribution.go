@@ -140,11 +140,102 @@ func deriveContributionChannelType(entry contribution_setting.ContributionEntry)
 	return entry
 }
 
-// GetContributionCatalogAdmin returns the full catalog, disabled entries included.
+// contributionCatalogAdminEntry is the per-entry display shape of the admin
+// catalog read: the stored entry plus the display fields the admin table
+// resolves server-side. The display fields are computed on every read and never
+// persisted, so the store keeps holding only the bindings; the retained
+// host-channel-id and plan-id fields are what the edit form still submits.
+type contributionCatalogAdminEntry struct {
+	contribution_setting.ContributionEntry
+	HostChannelName string `json:"host_channel_name"`
+	PlanTitle       string `json:"plan_title"`
+	ContributedKeys int    `json:"contributed_keys"`
+}
+
+// GetContributionCatalogAdmin returns the full catalog, disabled entries
+// included, with each entry's display data resolved server-side: the bound host
+// channel's name, the bound plan's title, and how many contributed keys are
+// still in the active state under the entry's upstream code.
+//
+// A binding whose channel or plan no longer exists reads as an empty name, and
+// any failed read degrades to empty/zero, so one broken entry degrades a single
+// cell to the frontend's deleted/missing fallback instead of failing the page.
+// The resolution is a small, constant number of batched reads independent of
+// catalog size: one channel read, the cached plan titles, and one grouped count.
 func GetContributionCatalogAdmin(c *gin.Context) {
+	entries := contribution_setting.AllEntries()
+
+	channelNames := map[int]string{}
+	planTitles := map[int]string{}
+	keyCounts := map[string]int{}
+
+	channelIds := make([]int, 0, len(entries))
+	planIds := make([]int, 0, len(entries))
+	codes := make([]string, 0, len(entries))
+	seenChannel := make(map[int]bool, len(entries))
+	seenPlan := make(map[int]bool, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		if entry.HostChannelId > 0 && !seenChannel[entry.HostChannelId] {
+			seenChannel[entry.HostChannelId] = true
+			channelIds = append(channelIds, entry.HostChannelId)
+		}
+		if entry.PlanId > 0 && !seenPlan[entry.PlanId] {
+			seenPlan[entry.PlanId] = true
+			planIds = append(planIds, entry.PlanId)
+		}
+		if entry.Code != "" {
+			codes = append(codes, entry.Code)
+		}
+	}
+
+	if len(channelIds) > 0 {
+		channels, err := model.GetChannelsByIds(channelIds)
+		if err != nil {
+			// A failed channel read degrades the names to empty; the catalog itself
+			// is still served.
+			common.SysError(fmt.Sprintf("failed to read the host channels of the contribution catalog: %v", err))
+		} else {
+			for _, channel := range channels {
+				channelNames[channel.Id] = channel.Name
+			}
+		}
+	}
+	for _, planId := range planIds {
+		// Plan titles already come from the process cache, so a since-deleted
+		// plan simply reads as an empty title.
+		plan, err := model.GetSubscriptionPlanById(planId)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				common.SysLog(fmt.Sprintf("contribution catalog plan %d no longer exists, serving an empty title", planId))
+			} else {
+				common.SysError(fmt.Sprintf("failed to read the contribution catalog plan %d: %v", planId, err))
+			}
+			continue
+		}
+		planTitles[planId] = plan.Title
+	}
+	counts, err := model.CountActiveContributionsByEntryCodes(codes)
+	if err != nil {
+		// A failed count degrades every entry to zero instead of failing the page.
+		common.SysError(fmt.Sprintf("failed to count the active contributions of the contribution catalog: %v", err))
+	} else {
+		keyCounts = counts
+	}
+
+	resolved := make([]contributionCatalogAdminEntry, 0, len(entries))
+	for i := range entries {
+		entry := &entries[i]
+		resolved = append(resolved, contributionCatalogAdminEntry{
+			ContributionEntry: *entry,
+			HostChannelName:   channelNames[entry.HostChannelId],
+			PlanTitle:         planTitles[entry.PlanId],
+			ContributedKeys:   keyCounts[entry.Code],
+		})
+	}
 	common.ApiSuccess(c, gin.H{
 		"enabled": contribution_setting.GlobalEnabled(),
-		"entries": contribution_setting.AllEntries(),
+		"entries": resolved,
 	})
 }
 

@@ -6888,6 +6888,8 @@
     "Contribution entry not found": "Запись не найдена",
     "Contribution entry updated successfully": "Запись успешно обновлена",
     "Contribution submitted": "Вклад отправлен",
+    "Contributed keys": "Внесённые ключи",
+    "(deleted/missing)": "(удалён/отсутствует)",
     "Created a contributable upstream entry": "Создана запись участвуемого источника",
     "Delete upstream": "Удалить источник",
     "Deleted a contributable upstream entry": "Удалена запись участвуемого источника",

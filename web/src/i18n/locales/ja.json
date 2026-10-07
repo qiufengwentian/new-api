@@ -6888,6 +6888,8 @@
     "Contribution entry not found": "項目が見つかりません",
     "Contribution entry updated successfully": "項目を更新しました",
     "Contribution submitted": "提供を送信しました",
+    "Contributed keys": "貢献されたキー",
+    "(deleted/missing)": "（削除済み/欠落）",
     "Created a contributable upstream entry": "貢献可能な上流の項目を作成しました",
     "Delete upstream": "上流を削除",
     "Deleted a contributable upstream entry": "貢献可能な上流の項目を削除しました",

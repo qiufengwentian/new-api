@@ -6888,6 +6888,8 @@
     "Contribution entry not found": "未找到可贡献上游条目",
     "Contribution entry updated successfully": "可贡献上游条目更新成功",
     "Contribution submitted": "贡献已提交",
+    "Contributed keys": "贡献的 Key",
+    "(deleted/missing)": "(已删除/缺失)",
     "Created a contributable upstream entry": "创建了一条可贡献上游条目",
     "Delete upstream": "删除上游",
     "Deleted a contributable upstream entry": "删除了一条可贡献上游条目",

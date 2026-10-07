@@ -6888,6 +6888,8 @@
     "Contribution entry not found": "Không tìm thấy mục",
     "Contribution entry updated successfully": "Đã cập nhật mục thành công",
     "Contribution submitted": "Đã gửi đóng góp",
+    "Contributed keys": "Khóa đã đóng góp",
+    "(deleted/missing)": "(đã xóa/thiếu)",
     "Created a contributable upstream entry": "Đã tạo một mục nguồn có thể đóng góp",
     "Delete upstream": "Xóa nguồn",
     "Deleted a contributable upstream entry": "Đã xóa một mục nguồn có thể đóng góp",

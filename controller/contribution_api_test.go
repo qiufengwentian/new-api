@@ -378,6 +378,96 @@ func TestContributionCatalogUserViewFollowsGlobalSwitch(t *testing.T) {
 	assert.Len(t, contributionEntriesOf(t, admin), 3)
 }
 
+// The admin catalog read resolves each entry's display data server-side: the bound
+// host channel's name, the bound plan's title, and how many contributed keys are
+// still active under the entry's upstream code. Dead and revoked keys never count,
+// and a binding whose channel or plan no longer exists degrades its cells to
+// empty names instead of failing the request.
+func TestContributionCatalogAdminResolvesNamesAndKeyCount(t *testing.T) {
+	db, token := setupContributionCatalogTest(t)
+	seedContributionHostChannel(t, db, 1, true, "sk-multi-a\nsk-multi-b")
+	seedContributionPlan(t, db, 1)
+	router := newContributionCatalogTestRouter()
+
+	create := `{"channel_type":1,"name":"OpenAI","register_url":"https://platform.openai.com/signup","key_placeholder":"sk-...","enabled":true,"host_channel_id":1,"plan_id":1}`
+	created := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", create))
+	require.Equal(t, true, created["success"], "body: %+v", created)
+	entryCode, ok := created["data"].(map[string]any)["entry"].(map[string]any)["code"].(string)
+	require.True(t, ok, "the created entry carries its upstream code")
+
+	// Four live keys, one dead and one revoked under the same code: the count
+	// must be exactly four.
+	for i := range 4 {
+		require.NoError(t, db.Create(&model.Contribution{
+			UserId:        100 + i,
+			EntryCode:     entryCode,
+			ChannelType:   1,
+			HostChannelId: 1,
+			KeyMask:       model.ContributionKeyMask,
+			Status:        model.ContributionStatusActive,
+		}).Error)
+	}
+	require.NoError(t, db.Create(&model.Contribution{
+		UserId: 424, EntryCode: entryCode, ChannelType: 1, HostChannelId: 1,
+		KeyMask: model.ContributionKeyMask, Status: model.ContributionStatusDead,
+	}).Error)
+	require.NoError(t, db.Create(&model.Contribution{
+		UserId: 425, EntryCode: entryCode, ChannelType: 1, HostChannelId: 1,
+		KeyMask: model.ContributionKeyMask, Status: model.ContributionStatusRevoked,
+	}).Error)
+
+	// A disabled entry may point at a channel or plan that no longer exists; the
+	// read must degrade its cells to empty names, not refuse the request.
+	broken := `{"channel_type":1,"name":"Broken","register_url":"https://upstream.example/signup","key_placeholder":"sk-...","enabled":false,"host_channel_id":999,"plan_id":999}`
+	brokenResp := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodPost, "/api/contribution/admin/catalog", broken))
+	require.Equal(t, true, brokenResp["success"], "body: %+v", brokenResp)
+	brokenCode, ok := brokenResp["data"].(map[string]any)["entry"].(map[string]any)["code"].(string)
+	require.True(t, ok, "the disabled entry carries its upstream code")
+
+	// The count ignores the entry's enabled flag: two live keys under the
+	// disabled entry's code still report two.
+	for i := range 2 {
+		require.NoError(t, db.Create(&model.Contribution{
+			UserId:        426 + i,
+			EntryCode:     brokenCode,
+			ChannelType:   1,
+			HostChannelId: 999,
+			KeyMask:       model.ContributionKeyMask,
+			Status:        model.ContributionStatusActive,
+		}).Error)
+	}
+
+	response := decodeContributionResponse(t, callContributionCatalog(t, router, token, http.MethodGet, "/api/contribution/admin/catalog", ""))
+	require.Equal(t, true, response["success"], "body: %+v", response)
+	data, ok := response["data"].(map[string]any)
+	require.True(t, ok)
+	entries, ok := data["entries"].([]any)
+	require.True(t, ok)
+	require.Len(t, entries, 2)
+
+	byId := map[float64]map[string]any{}
+	for _, raw := range entries {
+		item, itemOk := raw.(map[string]any)
+		require.True(t, itemOk)
+		byId[item["id"].(float64)] = item
+	}
+
+	first, ok := byId[1]
+	require.True(t, ok)
+	assert.Equal(t, "host-1", first["host_channel_name"])
+	assert.Equal(t, "Reward 1", first["plan_title"])
+	assert.EqualValues(t, 4, first["contributed_keys"], "only active records count; dead and revoked are excluded")
+	// The id fields stay in the payload, so the edit form keeps working.
+	assert.EqualValues(t, 1, first["host_channel_id"])
+	assert.EqualValues(t, 1, first["plan_id"])
+
+	brokenEntry, ok := byId[2]
+	require.True(t, ok)
+	assert.Empty(t, brokenEntry["host_channel_name"], "a since-deleted channel degrades to an empty name")
+	assert.Empty(t, brokenEntry["plan_title"], "a since-deleted plan degrades to an empty title")
+	assert.EqualValues(t, 2, brokenEntry["contributed_keys"], "the count ignores the enabled flag; a disabled entry still reports its active keys")
+}
+
 func TestContributionCatalogAdminMutationsAreAudited(t *testing.T) {
 	db, token := setupContributionCatalogTest(t)
 	seedContributionHostChannel(t, db, 2, true, "sk-multi-a\nsk-multi-b")

@@ -20,10 +20,12 @@ import { Plus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { toIntlLocale } from '@/i18n/languages'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { StaticDataTable } from '@/components/data-table/static/static-data-table'
 import { StaticRowActions } from '@/components/data-table/static/static-row-actions'
 import { StatusBadge } from '@/components/status-badge'
+import { formatNumber } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 
@@ -40,7 +42,8 @@ type CatalogTableProps = {
 }
 
 export function CatalogTable(props: CatalogTableProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const deleteEntry = useDeleteContributionEntry()
   const updateEntry = useUpdateContributionEntry()
   const [deleteTarget, setDeleteTarget] =
@@ -53,6 +56,11 @@ export function CatalogTable(props: CatalogTableProps) {
     await deleteEntry.mutateAsync(deleteTarget.id)
     setDeleteTarget(null)
   }
+
+  // Both binding cells share one display rule: the resolved name, or - when the
+  // bound target no longer exists - its id with the localized marker.
+  const bindingDisplay = (kind: 'channel' | 'plan', id: number, name?: string) =>
+    name ? name : `${kind} #${id} ${t('(deleted/missing)')}`
 
   return (
     <>
@@ -92,12 +100,23 @@ export function CatalogTable(props: CatalogTableProps) {
           {
             id: 'host-channel',
             header: t('Host Channel'),
-            cell: (entry) => entry.host_channel_id,
+            cell: (entry) =>
+              bindingDisplay(
+                'channel',
+                entry.host_channel_id,
+                entry.host_channel_name
+              ),
           },
           {
             id: 'plan',
             header: t('Subscription Plan'),
-            cell: (entry) => entry.plan_id,
+            cell: (entry) =>
+              bindingDisplay('plan', entry.plan_id, entry.plan_title),
+          },
+          {
+            id: 'contributed-keys',
+            header: t('Contributed keys'),
+            cell: (entry) => formatNumber(entry.contributed_keys ?? 0, locale),
           },
           {
             id: 'status',

@@ -30,6 +30,9 @@ import type { AdminContributionEntry, ContributionCatalogData } from '../types'
 // Two catalog entries with distinct internal ids and 8-char upstream codes. The
 // code is the durable user-facing identity and must never surface as a table
 // column on the admin page; the ID column shows the internal auto-increment id.
+// The display fields are resolved server-side: openai's bindings still exist,
+// while azure's channel and plan have since been deleted, so its names are
+// empty and the table must fall back to the deleted/missing markers.
 const openai: AdminContributionEntry = {
   id: 1,
   code: 'ABCDEFGH',
@@ -40,6 +43,9 @@ const openai: AdminContributionEntry = {
   enabled: true,
   host_channel_id: 2,
   plan_id: 3,
+  host_channel_name: 'openai-host',
+  plan_title: 'Basic reward',
+  contributed_keys: 4,
 }
 
 const azure: AdminContributionEntry = {
@@ -50,8 +56,11 @@ const azure: AdminContributionEntry = {
   register_url: 'https://azure.example/signup',
   key_placeholder: 'azure-...',
   enabled: false,
-  host_channel_id: 2,
-  plan_id: 3,
+  host_channel_id: 4,
+  plan_id: 5,
+  host_channel_name: '',
+  plan_title: '',
+  contributed_keys: 0,
 }
 
 function renderPage(catalog: ContributionCatalogData) {
@@ -143,7 +152,9 @@ it('does not expose a Channel Type dropdown in the create dialog', async () => {
 
 // The catalog table's ID column shows the entry's internal numeric id, not the
 // user-facing 8-char code: the code is the durable identity for the user page.
-it('shows the internal numeric id in the ID column and never the upstream code', async () => {
+// The host channel and plan columns render the server-resolved name and title
+// instead of the bare binding ids.
+it('shows the internal id and the resolved channel name and plan title', async () => {
   renderPage({ enabled: true, entries: [openai, azure] })
 
   const table = await screen.findByRole('table')
@@ -154,13 +165,42 @@ it('shows the internal numeric id in the ID column and never the upstream code',
     within(table).queryByRole('columnheader', { name: 'Channel Type' })
   ).not.toBeInTheDocument()
 
-  // The internal ids render exactly once each (the id column); the shared host
-  // channel id 2 and plan id 3 appear twice because two rows bind to them.
+  // The host channel and plan columns render the resolved name and title, not
+  // the bare binding ids.
+  expect(
+    within(table).getByRole('columnheader', { name: 'Host Channel' })
+  ).toBeInTheDocument()
+  expect(
+    within(table).getByRole('columnheader', { name: 'Subscription Plan' })
+  ).toBeInTheDocument()
+  expect(within(table).getByText('openai-host')).toBeInTheDocument()
+  expect(within(table).getByText('Basic reward')).toBeInTheDocument()
+
+  // The internal ids render exactly once each (the id column); the binding ids
+  // no longer surface as bare numbers in their own columns.
   expect(within(table).getAllByText('1')).toHaveLength(1)
-  expect(within(table).getAllByText('2')).toHaveLength(3)
-  expect(within(table).getAllByText('3')).toHaveLength(2)
+  expect(within(table).getAllByText('2')).toHaveLength(1)
+  expect(within(table).queryByText('3')).not.toBeInTheDocument()
 
   // The 8-char upstream codes never render on the admin table.
   expect(within(table).queryByText('ABCDEFGH')).not.toBeInTheDocument()
   expect(within(table).queryByText('JKLMNPQR')).not.toBeInTheDocument()
+})
+
+// A binding whose channel or plan no longer exists degrades its cell to the
+// localized deleted/missing marker built from the retained id, and the new
+// Contributed keys column shows the active-key count - zero included.
+it('renders the deleted/missing fallback and the contributed key count', async () => {
+  renderPage({ enabled: true, entries: [openai, azure] })
+
+  const table = await screen.findByRole('table')
+  expect(
+    within(table).getByRole('columnheader', { name: 'Contributed keys' })
+  ).toBeInTheDocument()
+  expect(within(table).getByText('4')).toBeInTheDocument()
+  expect(within(table).getByText('0')).toBeInTheDocument()
+  expect(
+    within(table).getByText('channel #4 (deleted/missing)')
+  ).toBeInTheDocument()
+  expect(within(table).getByText('plan #5 (deleted/missing)')).toBeInTheDocument()
 })

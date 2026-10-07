@@ -337,6 +337,41 @@ func CountActiveContributionEntryCodes(userId int) (int, error) {
 	return int(count), nil
 }
 
+// CountActiveContributionsByEntryCodes returns, for each input entry code, how
+// many active contribution records sit under it: the number of upstream keys
+// currently pooled per catalog entry. Dead and revoked records are not
+// counted, so the number reflects the load still serving traffic. A code with
+// no active record is absent from the result and reads as zero.
+//
+// Empty input yields an empty result without touching the database; a caller
+// that wants a read failure to degrade to zero maps an errored result back to
+// an empty map. One grouped read covers the whole batch regardless of catalog
+// size, and it uses only GORM query methods that render identically on
+// SQLite, MySQL and PostgreSQL.
+func CountActiveContributionsByEntryCodes(entryCodes []string) (map[string]int, error) {
+	counts := make(map[string]int, len(entryCodes))
+	if len(entryCodes) == 0 {
+		return counts, nil
+	}
+	type activeContributionCount struct {
+		EntryCode string `gorm:"column:entry_code"`
+		Count     int    `gorm:"column:count"`
+	}
+	rows := make([]activeContributionCount, 0, len(entryCodes))
+	err := DB.Model(&Contribution{}).
+		Select("entry_code, COUNT(*) as count").
+		Where("entry_code IN ? AND status = ?", entryCodes, ContributionStatusActive).
+		Group("entry_code").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		counts[rows[i].EntryCode] = rows[i].Count
+	}
+	return counts, nil
+}
+
 // GrantContributionReward issues the accepted contribution's reward: one
 // subscription instance built from the catalog entry's plan, tagged with the
 // "contribution" source and the plan's own quota/reset rules.
