@@ -170,7 +170,7 @@ export function MyContributions() {
           <EmptyState
             icon={KeyRound}
             bordered
-            title={t('No contributions yet')}
+            title={t('No contributions')}
             description={t('Contribute an upstream key and it will show up here.')}
           />
         ) : null}

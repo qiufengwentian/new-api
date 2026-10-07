@@ -89,14 +89,12 @@ export const CONTRIBUTION_REVOKE_REJECTION_MESSAGES: Record<string, string> = {
 export const CONTRIBUTION_STATUS_LABELS: Record<string, string> = {
   active: 'Active',
   dead: 'Dead',
-  revoked: 'Revoked',
 }
 
 // Machine terminal reasons of a contribution record. The values are i18n keys,
 // rendered as the reason a record is no longer active.
 export const CONTRIBUTION_REASON_LABELS: Record<string, string> = {
   upstream_unauthorized: 'The upstream rejected this key',
-  user_revoked: 'You revoked this contribution',
 }
 
 // How each contribution status reads. The labels stay in
@@ -105,7 +103,6 @@ export const CONTRIBUTION_REASON_LABELS: Record<string, string> = {
 export const CONTRIBUTION_STATUS_VARIANTS: Record<string, StatusVariant> = {
   active: 'success',
   dead: 'danger',
-  revoked: 'neutral',
 }
 
 // The reward is a plain subscription instance, so the contribution list and the
