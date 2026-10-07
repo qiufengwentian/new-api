@@ -49,9 +49,9 @@ import { RevokeContributionDialog } from './revoke-contribution-dialog'
 
 /**
  * The contributor's own list: what they brought in, whether it is still live, why
- * it ended, and what their reward is doing. Every record is rendered from the mask
- * the backend stores - the plaintext key is never part of any response - and only a
- * live record can be withdrawn, through the existing confirmation dialog.
+ * it ended, and what their reward is doing. The plaintext key and its fingerprint
+ * never leave the backend - and only a live record can be withdrawn, through the
+ * existing confirmation dialog.
  */
 export function MyContributions() {
   const { t } = useTranslation()
@@ -115,12 +115,6 @@ export function MyContributions() {
           </div>
         )
       },
-    },
-    {
-      id: 'key_mask',
-      header: t('Key mask'),
-      cellClassName: 'font-mono',
-      cell: (contribution) => contribution.key_mask,
     },
     {
       id: 'actions',

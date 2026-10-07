@@ -40,7 +40,6 @@ const contributions: ContributionSummary[] = [
     status: 'active',
     reason: '',
     reason_time: 0,
-    key_mask: '************',
     subscription_id: 9,
     subscription_status: 'active',
     subscription: {
@@ -61,7 +60,6 @@ const contributions: ContributionSummary[] = [
     status: 'dead',
     reason: 'upstream_unauthorized',
     reason_time: 1_700_100_000,
-    key_mask: '************',
     subscription_id: 10,
     subscription_status: 'cancelled',
     subscription: {
@@ -108,15 +106,6 @@ it('renders every contribution state with its reason and reward', async () => {
     within(deadRow).getByText('The upstream rejected this key')
   ).toBeInTheDocument()
   expect(within(deadRow).getByText('Invalidated')).toBeInTheDocument()
-})
-
-// The list only ever shows the display mask the backend stores; the plaintext key
-// is not part of the contract at all.
-it('shows the stored key mask for every record', async () => {
-  renderList({ items: contributions, summary: { entry_code_count: 1 } })
-
-  await screen.findByRole('row', { name: /OpenAI/ })
-  expect(screen.getAllByText('************')).toHaveLength(2)
 })
 
 it('reports how many upstreams (distinct codes) already reward the account', async () => {
