@@ -395,10 +395,12 @@ func GetContributionCatalog(c *gin.Context) {
 // GET /api/contribution/mine
 // ---------------------------------------------------------------------------
 
-// GetMyContributions lists the signed-in user's own contributions, newest first,
-// together with the account's contribution summary. Each record is reported with
-// its display mask only: the plaintext key and the key fingerprint never leave the
-// database.
+// GetMyContributions lists the signed-in user's own live and dead contributions,
+// newest first, together with the account's contribution summary. A record the
+// contributor has withdrawn is absent from the list rather than rendered as a
+// terminal row: its trace survives in the audit log instead. Each listed record
+// is reported with its display mask only: the plaintext key and the key
+// fingerprint never leave the database.
 func GetMyContributions(c *gin.Context) {
 	userId := c.GetInt("id")
 	contributions, err := model.GetContributionsByUser(userId)
@@ -407,6 +409,13 @@ func GetMyContributions(c *gin.Context) {
 		common.ApiError(c, errors.New("the contributions could not be read"))
 		return
 	}
+
+	// A withdrawn record no longer concerns the list, so it is excluded here, in
+	// the user-facing read only: the all-states read the liveness probe and the
+	// withdrawal endpoint rely on is left as it is.
+	contributions = slices.DeleteFunc(contributions, func(record model.Contribution) bool {
+		return record.Status == model.ContributionStatusRevoked
+	})
 
 	// A record points at the reward instance it produced; caching the lookup keeps a
 	// long list from re-reading the same subscription. The plan titles are cached the

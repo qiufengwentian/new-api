@@ -1359,8 +1359,9 @@ func contributionMineItemsById(t *testing.T, response map[string]any) (map[int]m
 }
 
 // The list is the contributor's own bookkeeping: the caller sees only their own
-// records, every state renders truthfully with its reason and reward, and the
-// summary counts the channel types that still reward the account.
+// live and dead records - a withdrawn one is absent from the list, not rendered -
+// each with its reason and reward, and the summary counts the upstreams that
+// still reward the account.
 func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *testing.T) {
 	db, _ := setupContributionCatalogTest(t)
 	handler := newContributionCatalogTestRouter()
@@ -1415,9 +1416,10 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	response := decodeContributionResponse(t, recorder)
 	byId, order := contributionMineItemsById(t, response)
 
-	require.Len(t, order, 5, "only the caller's own records are listed")
+	require.Len(t, order, 4, "only the caller's own live and dead records are listed")
 	assert.NotContains(t, order, foreign.Id)
-	assert.Equal(t, []int{dead.Id, liveOtherType.Id, revoked.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
+	assert.NotContains(t, order, revoked.Id, "a withdrawn record is absent from the list, not rendered")
+	assert.Equal(t, []int{dead.Id, liveOtherType.Id, liveRedundant.Id, liveRewarded.Id}, order, "newest first")
 
 	liveItem := byId[liveRewarded.Id]
 	assert.Equal(t, "ABCDEFGH", liveItem["entry_code"])
@@ -1442,12 +1444,6 @@ func TestContributionMineListsOnlyTheCallersOwnContributionsInFullDetail(t *test
 	assert.NotZero(t, deadItem["reason_time"])
 	require.NotNil(t, deadItem["subscription"], "a dead contribution still reports the reward it used to hold")
 	assert.Equal(t, "cancelled", deadItem["subscription"].(map[string]any)["status"])
-
-	revokedItem := byId[revoked.Id]
-	assert.Equal(t, model.ContributionStatusRevoked, revokedItem["status"])
-	assert.Equal(t, model.ContributionReasonUserRevoked, revokedItem["reason"])
-	assert.NotZero(t, revokedItem["reason_time"])
-	assert.Nil(t, revokedItem["subscription"])
 
 	// The catalog entry names channel type 1; channel type 3 has none and falls back
 	// to the built-in channel type name.
