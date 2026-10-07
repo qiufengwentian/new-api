@@ -6909,7 +6909,6 @@
     "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.": "Tôi hiểu rằng khóa thượng nguồn này sẽ được thêm vào một kênh chia sẻ và dùng cho các yêu cầu của người dùng khác, và chỉ một bản xem trước đã che được lưu để hiển thị.",
     "Invalid contribution entry": "Mục không hợp lệ",
     "Key Placeholder": "Gợi ý khóa",
-    "Key mask": "Mặt nạ khóa",
     "Manage which upstream providers users can contribute keys for": "Quản lý những nguồn mà người dùng có thể đóng góp khóa",
     "Name is required": "Vui lòng nhập tên",
     "No upstream is open for contribution right now.": "Hiện chưa có nguồn nào mở để đóng góp.",

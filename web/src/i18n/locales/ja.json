@@ -6909,7 +6909,6 @@
     "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.": "この上流キーは共有チャネルに追加され、自分以外のユーザーのリクエストに使用されること、および表示用にマスクされたプレビューのみが保存されることを理解します。",
     "Invalid contribution entry": "項目が無効です",
     "Key Placeholder": "キーのプレースホルダー",
-    "Key mask": "キーのマスク",
     "Manage which upstream providers users can contribute keys for": "ユーザーがキーを提供できる上流を管理します",
     "Name is required": "名前を入力してください",
     "No upstream is open for contribution right now.": "現在、貢献を受け付けている上流はありません。",

@@ -6909,7 +6909,6 @@
     "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.": "Je comprends que cette clé amont sera ajoutée à un canal partagé et utilisée pour les requêtes d'autres utilisateurs que moi, et que seul un aperçu masqué est conservé pour l'affichage.",
     "Invalid contribution entry": "Entrée invalide",
     "Key Placeholder": "Texte indicatif de la clé",
-    "Key mask": "Masque de la clé",
     "Manage which upstream providers users can contribute keys for": "Gérez les fournisseurs pour lesquels les utilisateurs peuvent contribuer des clés",
     "Name is required": "Le nom est requis",
     "No upstream is open for contribution right now.": "Aucun amont n'est ouvert à la contribution pour le moment.",

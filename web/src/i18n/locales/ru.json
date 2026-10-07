@@ -6909,7 +6909,6 @@
     "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.": "Я понимаю, что этот вышестоящий ключ будет добавлен в общий канал и использоваться для запросов других пользователей, а для отображения сохраняется только маскированный фрагмент.",
     "Invalid contribution entry": "Недопустимая запись",
     "Key Placeholder": "Подсказка ключа",
-    "Key mask": "Маска ключа",
     "Manage which upstream providers users can contribute keys for": "Управляйте источниками, для которых пользователи могут передавать ключи",
     "Name is required": "Укажите название",
     "No upstream is open for contribution right now.": "Сейчас нет источников, открытых для передачи ключей.",

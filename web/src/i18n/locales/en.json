@@ -6909,7 +6909,6 @@
     "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.": "I understand that this upstream key will be added to a shared channel and used for requests from users other than me, and that only a masked preview of it is kept for display.",
     "Invalid contribution entry": "Invalid contribution entry",
     "Key Placeholder": "Key Placeholder",
-    "Key mask": "Key mask",
     "Manage which upstream providers users can contribute keys for": "Manage which upstream providers users can contribute keys for",
     "Name is required": "Name is required",
     "No upstream is open for contribution right now.": "No upstream is open for contribution right now.",
