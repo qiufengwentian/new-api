@@ -399,8 +399,8 @@ func GetContributionCatalog(c *gin.Context) {
 // newest first, together with the account's contribution summary. A record the
 // contributor has withdrawn is absent from the list rather than rendered as a
 // terminal row: its trace survives in the audit log instead. Each listed record
-// is reported with its display mask only: the plaintext key and the key
-// fingerprint never leave the database.
+// carries display fields only: the plaintext key and the fingerprint
+// never leave the database.
 func GetMyContributions(c *gin.Context) {
 	userId := c.GetInt("id")
 	contributions, err := model.GetContributionsByUser(userId)
